@@ -134,6 +134,32 @@ class SndmartRepository(
         }
     }
 
+    /**
+     * Reads the logged-in user's profiles.city_id and resolves it to an active City
+     * (with name). Returns null when the user has no city assigned yet (first-time flow)
+     * or when the backend is unavailable — the caller then falls back to GPS detection.
+     */
+    suspend fun resolveUserCity(userId: String): Result<City?> {
+        if (!SupabaseClient.isKeyConfigured()) return Result.success(null)
+        return try {
+            val profileRes = api.getProfile("eq.$userId")
+            if (!profileRes.isSuccessful || profileRes.body().isNullOrEmpty()) {
+                return Result.success(null)
+            }
+            val cityId = profileRes.body()!!.first().cityId
+                ?: return Result.success(null)
+            val citiesRes = api.getCities(status = "eq.active", order = "name.asc")
+            if (!citiesRes.isSuccessful || citiesRes.body() == null) {
+                return Result.success(null)
+            }
+            val city = citiesRes.body()!!.firstOrNull { it.id == cityId }
+            Result.success(city)
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception resolving user city from profile: ${e.message}", e)
+            Result.success(null)
+        }
+    }
+
     // --- CATEGORIES ---
     suspend fun getCategories(): Result<List<Category>> {
         if (!SupabaseClient.isKeyConfigured()) {

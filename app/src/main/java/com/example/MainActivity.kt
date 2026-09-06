@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
                 val currentDestination = currentBackStack?.destination?.route
 
                 val selectedCity by sessionManager.selectedCity.collectAsState()
+                val userId by sessionManager.userId.collectAsState()
                 var showCityPicker by remember { mutableStateOf(false) }
                 var showSupabaseSettings by remember { mutableStateOf(false) }
 
@@ -219,6 +220,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Kick off the first-time city detection flow (permission prompt -> GPS ->
+                // find_city_for_location RPC). Sets the dialog visible synchronously so the
+                // city-picker fallback doesn't race in while detection is starting.
+                fun startFirstTimeCityDetection() {
+                    showLocationDialog = true
+                    if (!locationDetector.hasLocationPermission()) {
+                        locationDetectionState = LocationDetectionState.PERMISSION_REQUIRED
+                    } else {
+                        performLocationDetectionAndCityAssignment()
+                    }
+                }
+
                 val locationPermissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestMultiplePermissions()
                 ) { permissions ->
@@ -232,13 +245,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Require location on app startup and auto-detect city
-                LaunchedEffect(Unit) {
-                    if (!locationDetector.hasLocationPermission()) {
-                        locationDetectionState = LocationDetectionState.PERMISSION_REQUIRED
-                        showLocationDialog = true
+                // City detection runs AFTER login (or a restored session), not on every app
+                // open. If the user already has a city (locally or on profiles.city_id), skip
+                // straight to Home. Only when profiles.city_id is null do we run the first-time
+                // GPS detection flow. Re-detection otherwise happens only on a >30min resume
+                // (see lifecycle observer below) or an explicit "Update my location" tap.
+                LaunchedEffect(userId) {
+                    val currentUserId = userId ?: return@LaunchedEffect
+                    if (selectedCity != null) return@LaunchedEffect
+                    // Logged in with no city yet: prefer the city saved on the profile.
+                    val profileCity = repository.resolveUserCity(currentUserId).getOrNull()
+                    if (profileCity != null) {
+                        sessionManager.setSelectedCity(profileCity)
                     } else {
-                        performLocationDetectionAndCityAssignment()
+                        startFirstTimeCityDetection()
                     }
                 }
 
