@@ -87,6 +87,11 @@ interface SupabaseApi {
         @Query("order") order: String = "is_active.desc,is_featured.desc,name.asc"
     ): Response<List<Vendor>>
 
+    @GET("rest/v1/vendors")
+    suspend fun getVendorById(
+        @Query("id") idQuery: String
+    ): Response<List<Vendor>>
+
     // --- PRODUCTS ---
 
     @GET("rest/v1/products")
@@ -200,7 +205,7 @@ interface SupabaseApi {
     @GET("rest/v1/orders")
     suspend fun getOrders(
         @Query("customer_id") customerId: String,
-        @Query("order") order: String = "id.desc"
+        @Query("order") order: String = "created_at.desc"
     ): Response<List<Order>>
 
     @GET("rest/v1/orders")

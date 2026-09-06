@@ -635,8 +635,13 @@ fun OrderStatusStepper(
 
     val currentStatusNormalized = currentStatus.lowercase()
 
+    // Cancelled / rejected: distinct red state with the cancellation timestamp (if any).
     val isTerminalFailed = currentStatusNormalized == "cancelled" || currentStatusNormalized == "rejected"
     if (isTerminalFailed) {
+        val cancelEntry = history.find {
+            val s = it.status.lowercase()
+            s == "cancelled" || s == "rejected"
+        }
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = PastelCoral,
@@ -645,31 +650,36 @@ fun OrderStatusStepper(
             Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Cancel, contentDescription = null, tint = NaturalBadgeRed)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    "This order was $currentStatusNormalized.",
-                    fontWeight = FontWeight.Bold,
-                    color = NaturalBadgeRed
-                )
+                Column {
+                    Text(
+                        "This order was $currentStatusNormalized.",
+                        fontWeight = FontWeight.Bold,
+                        color = NaturalBadgeRed
+                    )
+                    if (!cancelEntry?.createdAt.isNullOrBlank()) {
+                        Text(
+                            cancelEntry!!.createdAt.take(16).replace("T", " "),
+                            fontSize = 11.sp,
+                            color = NaturalBadgeRed
+                        )
+                    }
+                }
             }
         }
         return
     }
 
-    val stepIndexMap = mapOf(
-        "pending" to 0,
-        "confirmed" to 1,
-        "preparing" to 2,
-        "ready" to 3,
-        "out_for_delivery" to 4,
-        "delivered" to 5
-    )
-
-    val activeIndex = stepIndexMap[currentStatusNormalized] ?: 0
+    // Done-state is driven ENTIRELY by order_status_history rows (the backend writes a
+    // row on every status change) — never inferred from orders.status. The history is
+    // fetched ordered by created_at.asc, so the last entry is the current/latest step.
+    val historyByStatus = remember(history) { history.associateBy { it.status.lowercase() } }
+    val latestStatus = history.lastOrNull()?.status?.lowercase() ?: currentStatusNormalized
 
     Column(modifier = Modifier.fillMaxWidth()) {
         steps.forEachIndexed { index, (key, label) ->
-            val isCompleted = index <= activeIndex
-            val isCurrent = index == activeIndex
+            val histItem = historyByStatus[key]
+            val isDone = histItem != null
+            val isCurrent = key == latestStatus
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -678,14 +688,11 @@ fun OrderStatusStepper(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Surface(
                         shape = CircleShape,
-                        color = when {
-                            isCompleted -> NaturalPrimary
-                            else -> TextMuted.copy(alpha = 0.3f)
-                        },
+                        color = if (isDone) NaturalPrimary else TextMuted.copy(alpha = 0.3f),
                         modifier = Modifier.size(24.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            if (isCompleted) {
+                            if (isDone) {
                                 Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
                             } else {
                                 Text("${index + 1}", fontSize = 11.sp, color = TextMuted)
@@ -694,11 +701,12 @@ fun OrderStatusStepper(
                     }
 
                     if (index < steps.size - 1) {
+                        val nextDone = historyByStatus[steps[index + 1].first] != null
                         Box(
                             modifier = Modifier
                                 .width(2.dp)
                                 .height(32.dp)
-                                .background(if (index < activeIndex) NaturalPrimary else TextMuted.copy(alpha = 0.3f))
+                                .background(if (nextDone) NaturalPrimary else TextMuted.copy(alpha = 0.3f))
                         )
                     }
                 }
@@ -709,14 +717,12 @@ fun OrderStatusStepper(
                     Text(
                         text = label,
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isCompleted) TextPrimary else TextMuted,
+                        color = if (isDone) TextPrimary else TextMuted,
                         fontSize = 14.sp
                     )
-                    // If timestamp in history
-                    val histItem = history.find { it.status.lowercase() == key }
-                    if (histItem?.createdAt != null) {
+                    if (!histItem?.createdAt.isNullOrBlank()) {
                         Text(
-                            text = histItem.createdAt.take(16).replace("T", " "),
+                            text = histItem!!.createdAt.take(16).replace("T", " "),
                             fontSize = 11.sp,
                             color = TextMuted
                         )

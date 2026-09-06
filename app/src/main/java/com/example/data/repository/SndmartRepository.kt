@@ -279,6 +279,16 @@ class SndmartRepository(
         }
     }
 
+    // Fetch a single vendor's display name (used to label hotel orders in the list).
+    suspend fun getVendorName(vendorId: String): Result<String?> {
+        return try {
+            val response = api.getVendorById(idQuery = "eq.$vendorId")
+            Result.success(response.body()?.firstOrNull()?.name)
+        } catch (e: Exception) {
+            Result.success(null)
+        }
+    }
+
     // --- PRODUCTS & CITY STOCK RESOLUTION ---
     suspend fun getResolvedGroceryProducts(
         cityId: String,
@@ -1020,22 +1030,23 @@ class SndmartRepository(
                             isHotel = isHotel
                         )
                         if (result is AddToCartResult.HotelConflict) {
-                            skipped.add("${item.productName} (Conflict with existing hotel cart)")
+                            skipped.add("'${item.productName}' conflicts with your current hotel cart.")
                         } else {
                             addedCount++
                         }
                     } else {
-                        skipped.add("${item.productName} (Unavailable)")
+                        skipped.add("'${item.productName}' is no longer available.")
                     }
                 } else {
-                    skipped.add("${item.productName} (Unavailable)")
+                    skipped.add("'${item.productName}' is no longer available.")
                 }
             }
 
+            val total = orderItems.size
             val msg = buildString {
-                append("Added $addedCount item(s) to cart.")
+                append("$addedCount of $total items added to cart.")
                 if (skipped.isNotEmpty()) {
-                    append(" Skipped: ${skipped.joinToString(", ")}.")
+                    append(" ${skipped.joinToString(" ")}")
                 }
             }
             Result.success(msg)
