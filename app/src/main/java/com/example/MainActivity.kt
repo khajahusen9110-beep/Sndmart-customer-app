@@ -29,6 +29,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.example.data.location.LocationDetector
+import com.example.data.model.City
 import com.example.data.repository.SndmartRepository
 import com.example.service.InAppNotification
 import com.example.service.SndmartMessagingService
@@ -37,6 +38,9 @@ import com.example.ui.components.LocationDetectionState
 import com.example.ui.components.LocationRequirementDialog
 import com.example.ui.screens.*
 import com.example.ui.theme.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -93,42 +97,122 @@ class MainActivity : ComponentActivity() {
                 var detectedCityName by remember { mutableStateOf<String?>(null) }
                 var assignedCityName by remember { mutableStateOf<String?>(null) }
                 var activeCitiesSummary by remember { mutableStateOf("") }
+                var hasDeniedLocationThisSession by remember { mutableStateOf(false) }
+                var lastDetectionTimeMs by remember { mutableStateOf(0L) }
+                var pendingAutoCityChange by remember { mutableStateOf<City?>(null) }
+                val snackbarHostState = remember { SnackbarHostState() }
+                var snackbarMessage by remember { mutableStateOf<String?>(null) }
 
-                fun performLocationDetectionAndCityAssignment() {
+                fun applyDetectedCity(city: City) {
+                    val currentCity = sessionManager.selectedCity.value
+                    val cartCount = repository.getCartCount()
+
+                    if (currentCity != null && currentCity.id != city.id && cartCount > 0) {
+                        // Cart has items and city is changing — warn before clearing
+                        showLocationDialog = false
+                        pendingAutoCityChange = city
+                    } else {
+                        // Apply directly (same city, empty cart, or first launch)
+                        if (currentCity == null || currentCity.id != city.id) {
+                            sessionManager.setSelectedCity(city)
+                            repository.clearAllCarts()
+                            // Silently update profile city_id if logged in
+                            val userId = sessionManager.userId.value
+                            if (!userId.isNullOrBlank()) {
+                                coroutineScope.launch {
+                                    try { repository.updateProfileCityId(userId, city.id) } catch (e: Exception) {}
+                                }
+                            }
+                        }
+                        assignedCityName = city.name
+                        locationDetectionState = LocationDetectionState.SUCCESS
+                        showCityPicker = false
+                    }
+                }
+
+                fun recheckLocationSilently() {
                     coroutineScope.launch {
-                        showLocationDialog = true
-                        locationDetectionState = LocationDetectionState.DETECTING
+                        lastDetectionTimeMs = System.currentTimeMillis()
+                        if (!locationDetector.hasLocationPermission() || hasDeniedLocationThisSession) return@launch
 
                         val coordinates = locationDetector.getCurrentCoordinates()
                         val lat = coordinates?.latitude
                         val lng = coordinates?.longitude
 
-                        val geoCity = if (lat != null && lng != null) {
-                            locationDetector.getCityNameFromCoordinates(lat, lng)
-                        } else null
-                        detectedCityName = geoCity
+                        if (lat != null && lng != null) {
+                            val rpcResult = repository.findCityForLocation(lat, lng)
+                            val rpcCity = rpcResult.getOrNull()
 
-                        // Strictly fetch from backend — no dummy cities
-                        val citiesResult = repository.getActiveCities()
-                        val backendCities = citiesResult.getOrNull()?.filter { it.status == "active" } ?: emptyList()
+                            if (rpcResult.isSuccess && rpcCity != null) {
+                                val currentCity = sessionManager.selectedCity.value
+                                if (currentCity == null || currentCity.id != rpcCity.id) {
+                                    if (repository.getCartCount() > 0) {
+                                        pendingAutoCityChange = rpcCity
+                                    } else {
+                                        sessionManager.setSelectedCity(rpcCity)
+                                        val userId = sessionManager.userId.value
+                                        if (!userId.isNullOrBlank()) {
+                                            try { repository.updateProfileCityId(userId, rpcCity.id) } catch (e: Exception) {}
+                                        }
+                                        snackbarMessage = "Your delivery city has been updated to ${rpcCity.name}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
-                        if (backendCities.isNotEmpty()) {
-                            activeCitiesSummary = backendCities.joinToString(", ") { it.name }
-                            val matchedCity = locationDetector.matchWithBackendCities(geoCity, lat, lng, backendCities)
-                            if (matchedCity != null) {
-                                sessionManager.setSelectedCity(matchedCity)
-                                assignedCityName = matchedCity.name
-                                locationDetectionState = LocationDetectionState.SUCCESS
-                                showCityPicker = false
-                            } else {
+                fun performLocationDetectionAndCityAssignment() {
+                    coroutineScope.launch {
+                        showLocationDialog = true
+                        locationDetectionState = LocationDetectionState.DETECTING
+                        lastDetectionTimeMs = System.currentTimeMillis()
+
+                        val coordinates = locationDetector.getCurrentCoordinates()
+                        val lat = coordinates?.latitude
+                        val lng = coordinates?.longitude
+
+                        if (lat != null && lng != null) {
+                            // Primary: backend RPC for authoritative city detection
+                            val rpcResult = repository.findCityForLocation(lat, lng)
+                            val rpcCity = rpcResult.getOrNull()
+
+                            if (rpcResult.isSuccess && rpcCity != null) {
+                                // City found via backend RPC
+                                applyDetectedCity(rpcCity)
+                            } else if (rpcResult.isSuccess && rpcCity == null) {
+                                // Location not serviceable — no city covers this area
+                                detectedCityName = null
                                 locationDetectionState = LocationDetectionState.UNSUPPORTED_AREA
+                            } else {
+                                // RPC failed — fall back to geocoding + client-side matching
+                                val geoCity = locationDetector.getCityNameFromCoordinates(lat, lng)
+                                detectedCityName = geoCity
+                                val citiesResult = repository.getActiveCities()
+                                val backendCities = citiesResult.getOrNull()?.filter { it.status == "active" } ?: emptyList()
+                                if (backendCities.isNotEmpty()) {
+                                    activeCitiesSummary = backendCities.joinToString(", ") { it.name }
+                                    val matchedCity = locationDetector.matchWithBackendCities(geoCity, lat, lng, backendCities)
+                                    if (matchedCity != null) {
+                                        applyDetectedCity(matchedCity)
+                                    } else {
+                                        locationDetectionState = LocationDetectionState.UNSUPPORTED_AREA
+                                    }
+                                } else {
+                                    if (selectedCity != null) {
+                                        showLocationDialog = false
+                                    } else {
+                                        locationDetectionState = LocationDetectionState.UNSUPPORTED_AREA
+                                    }
+                                }
                             }
                         } else {
+                            // Location unavailable
                             if (selectedCity != null) {
                                 showLocationDialog = false
                             } else {
                                 locationDetectionState = LocationDetectionState.UNSUPPORTED_AREA
-                                activeCitiesSummary = "No active cities loaded from backend."
+                                activeCitiesSummary = "Unable to determine your location."
                             }
                         }
                     }
@@ -143,6 +227,7 @@ class MainActivity : ComponentActivity() {
                         performLocationDetectionAndCityAssignment()
                     } else {
                         locationDetectionState = LocationDetectionState.PERMISSION_DENIED
+                        hasDeniedLocationThisSession = true
                     }
                 }
 
@@ -153,6 +238,31 @@ class MainActivity : ComponentActivity() {
                         showLocationDialog = true
                     } else {
                         performLocationDetectionAndCityAssignment()
+                    }
+                }
+
+                // Re-check location when app is resumed after being backgrounded >30 minutes
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            val elapsed = System.currentTimeMillis() - lastDetectionTimeMs
+                            if (lastDetectionTimeMs > 0 && elapsed > 30 * 60 * 1000L) {
+                                recheckLocationSilently()
+                            }
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycleOwner.lifecycle.removeObserver(observer)
+                    }
+                }
+
+                // Show snackbar for city updates / notifications
+                LaunchedEffect(snackbarMessage) {
+                    snackbarMessage?.let {
+                        snackbarHostState.showSnackbar(it)
+                        snackbarMessage = null
                     }
                 }
 
@@ -192,6 +302,7 @@ class MainActivity : ComponentActivity() {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     contentWindowInsets = WindowInsets.safeDrawing,
+                    snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
                     bottomBar = {
                         if (isTopLevelDestination) {
                             NavigationBar(
@@ -474,6 +585,49 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onDismiss = {
                                     showLocationDialog = false
+                                },
+                                onNotifyMe = {
+                                    showLocationDialog = false
+                                    snackbarMessage = "We'll notify you when Sndmart launches in your area!"
+                                    showCityPicker = true
+                                }
+                            )
+                        }
+
+                        // Cart-clear warning when auto-detected city differs from current
+                        if (pendingAutoCityChange != null) {
+                            val newCity = pendingAutoCityChange!!
+                            AlertDialog(
+                                onDismissRequest = { pendingAutoCityChange = null },
+                                title = { Text("Switch to ${newCity.name}?", fontWeight = FontWeight.Bold) },
+                                text = {
+                                    Text("Your location suggests you're in ${newCity.name}. Switching your delivery city will clear your current cart items, as prices and stock are city-specific. Do you wish to continue?")
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            val c = newCity
+                                            pendingAutoCityChange = null
+                                            coroutineScope.launch {
+                                                sessionManager.setSelectedCity(c)
+                                                repository.clearAllCarts()
+                                                val userId = sessionManager.userId.value
+                                                if (!userId.isNullOrBlank()) {
+                                                    try { repository.updateProfileCityId(userId, c.id) } catch (e: Exception) {}
+                                                }
+                                                snackbarMessage = "Delivery city updated to ${c.name}"
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
+                                        shape = RoundedCornerShape(20.dp)
+                                    ) {
+                                        Text("Switch & Clear Cart")
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { pendingAutoCityChange = null }) {
+                                        Text("Stay in Current City")
+                                    }
                                 }
                             )
                         }

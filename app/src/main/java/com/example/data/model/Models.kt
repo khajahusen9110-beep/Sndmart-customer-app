@@ -12,6 +12,13 @@ data class City(
 )
 
 @JsonClass(generateAdapter = true)
+data class CityLocationResult(
+    @Json(name = "city_id") val cityId: String = "",
+    @Json(name = "city_name") val cityName: String = "",
+    @Json(name = "distance_km") val distanceKm: Double? = null
+)
+
+@JsonClass(generateAdapter = true)
 data class Category(
     val id: String = "",
     val name: String = "",
