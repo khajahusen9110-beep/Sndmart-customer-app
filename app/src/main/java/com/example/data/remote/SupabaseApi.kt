@@ -69,7 +69,10 @@ interface SupabaseApi {
     @GET("rest/v1/categories")
     suspend fun getCategories(
         @Query("is_active") isActive: String = "eq.true",
-        @Query("order") order: String = "sort_order.asc"
+        @Query("order") order: String = "sort_order.asc",
+        @Query("vendor_type", encoded = true) vendorType: String? = null,
+        @Query("vendor_id") vendorId: String? = null,
+        @Query("city_id") cityId: String? = null
     ): Response<List<Category>>
 
     // --- VENDORS ---
@@ -88,6 +91,7 @@ interface SupabaseApi {
         @Query("is_active") isActive: String = "eq.true",
         @Query("category_id") categoryId: String? = null,
         @Query("vendor_id") vendorId: String? = null,
+        @Query("name", encoded = true) name: String? = null,
         @Query("order") order: String = "is_featured.desc,name.asc"
     ): Response<List<Product>>
 

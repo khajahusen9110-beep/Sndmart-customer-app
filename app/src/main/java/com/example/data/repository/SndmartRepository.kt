@@ -33,11 +33,14 @@ class SndmartRepository(
     private val _localOrderItems = mutableListOf<OrderItem>()
     private val _localAddresses = MutableStateFlow<List<CustomerAddress>>(listOf(DemoCatalog.SAMPLE_ADDRESS))
 
-    private fun getFallbackGroceryProducts(categoryId: String?): List<ResolvedProduct> {
-        val filtered = if (categoryId.isNullOrBlank()) {
-            DemoCatalog.GROCERY_PRODUCTS
-        } else {
-            DemoCatalog.GROCERY_PRODUCTS.filter { it.categoryId == categoryId }
+    private fun getFallbackGroceryProducts(categoryId: String?, searchQuery: String? = null): List<ResolvedProduct> {
+        val filtered = when {
+            !searchQuery.isNullOrBlank() ->
+                DemoCatalog.GROCERY_PRODUCTS.filter { it.name.contains(searchQuery, ignoreCase = true) }
+            categoryId.isNullOrBlank() ->
+                DemoCatalog.GROCERY_PRODUCTS
+            else ->
+                DemoCatalog.GROCERY_PRODUCTS.filter { it.categoryId == categoryId }
         }
         return filtered.map { prod ->
             ResolvedProduct(
@@ -49,6 +52,14 @@ class SndmartRepository(
             )
         }
     }
+
+    // Grocery categories: vendor_type IN (grocery,vegetable,fruit), vendor_id IS NULL,
+    // scoped to the customer's city. Demo fallback ignores city_id (demo cats have none).
+    private val demoGroceryCategories: List<Category>
+        get() = DemoCatalog.CATEGORIES.filter {
+            val vt = it.vendorType?.lowercase()
+            vt in listOf("grocery", "vegetable", "fruit") && it.vendorId == null && it.isActive
+        }
 
     private fun getFallbackHotelMenu(vendorId: String): Pair<List<Category>, List<ResolvedProduct>> {
         val cats = DemoCatalog.HOTEL_CATEGORIES.filter { it.vendorId == vendorId }
@@ -180,6 +191,33 @@ class SndmartRepository(
         }
     }
 
+    // Grocery categories for a city: vendor_type IN (grocery,vegetable,fruit),
+    // vendor_id IS NULL, is_active=true, city_id=eq.{cityId}, ordered by sort_order.
+    suspend fun getGroceryCategories(cityId: String): Result<List<Category>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(demoGroceryCategories)
+        }
+        return try {
+            val response = api.getCategories(
+                isActive = "eq.true",
+                order = "sort_order.asc",
+                vendorType = "in.(grocery,vegetable,fruit)",
+                vendorId = "is.null",
+                cityId = "eq.$cityId"
+            )
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!)
+            } else {
+                val error = SupabaseClient.parseErrorMessage(response)
+                Log.w(TAG, "Could not fetch grocery categories: $error. Falling back to demo.")
+                Result.success(demoGroceryCategories)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception fetching grocery categories: ${e.message}", e)
+            Result.success(demoGroceryCategories)
+        }
+    }
+
     // --- VENDORS (HOTELS) ---
     suspend fun getHotels(cityId: String): Result<List<Vendor>> {
         if (!SupabaseClient.isKeyConfigured()) {
@@ -201,17 +239,27 @@ class SndmartRepository(
     }
 
     // --- PRODUCTS & CITY STOCK RESOLUTION ---
-    suspend fun getResolvedGroceryProducts(cityId: String, categoryId: String? = null): Result<List<ResolvedProduct>> {
+    suspend fun getResolvedGroceryProducts(
+        cityId: String,
+        categoryId: String? = null,
+        searchQuery: String? = null
+    ): Result<List<ResolvedProduct>> {
         if (!SupabaseClient.isKeyConfigured()) {
-            return Result.success(getFallbackGroceryProducts(categoryId))
+            return Result.success(getFallbackGroceryProducts(categoryId, searchQuery))
         }
         return try {
-            // Generic grocery items have vendor_id IS NULL
-            val catQuery = categoryId?.let { "eq.$it" }
+            // When searching, look across ALL city groceries (ignore category) using
+            // name=ilike.*query*; otherwise filter by the selected category.
+            val searching = !searchQuery.isNullOrBlank()
+            val catQuery = if (searching) null else categoryId?.let { "eq.$it" }
+            val nameQuery = searchQuery?.takeIf { it.isNotBlank() }?.let {
+                "ilike.*" + java.net.URLEncoder.encode(it.trim(), "UTF-8").replace("+", "%20") + "*"
+            }
             val prodResponse = api.getProducts(
                 isActive = "eq.true",
                 categoryId = catQuery,
-                vendorId = "is.null"
+                vendorId = "is.null",
+                name = nameQuery
             )
             if (!prodResponse.isSuccessful || prodResponse.body() == null) {
                 val error = SupabaseClient.parseErrorMessage(prodResponse)

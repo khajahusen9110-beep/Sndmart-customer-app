@@ -34,6 +34,7 @@ import com.example.data.repository.AddToCartResult
 import com.example.data.repository.SndmartRepository
 import com.example.ui.components.*
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class BrowsingMode {
@@ -79,29 +80,35 @@ fun HomeScreen(
     // Snackbar host
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Refresh function for grocery
-    fun loadGroceryData(cityId: String) {
+    // Grocery categories depend only on the city (vendor_type IN grocery/vegetable/fruit,
+    // vendor_id IS NULL, city-scoped) — fetched once per city.
+    fun loadGroceryCategories(cityId: String) {
+        coroutineScope.launch {
+            val catRes = repository.getGroceryCategories(cityId)
+            if (catRes.isSuccess) {
+                categories = catRes.getOrNull() ?: emptyList()
+            } else {
+                categories = emptyList()
+                groceryError = catRes.exceptionOrNull()?.message
+            }
+        }
+    }
+
+    // Grocery products depend on city + selected category + search query. Prices are
+    // always fetched fresh (city-stock override applied), never cached across visits.
+    fun loadGroceryProducts(cityId: String, query: String) {
         coroutineScope.launch {
             isGroceryLoading = true
             groceryError = null
-            // Categories where vendor_type IN ('grocery','vegetable','fruit') AND vendor_id IS NULL AND is_active=true
-            val catRes = repository.getCategories()
-            if (catRes.isSuccess) {
-                val filteredCats = catRes.getOrNull()?.filter {
-                    val vt = it.vendorType?.lowercase()
-                    (vt == "grocery" || vt == "vegetable" || vt == "fruit" || vt == null) &&
-                            it.vendorId == null && it.isActive
-                } ?: emptyList()
-                categories = filteredCats
-            } else {
-                groceryError = catRes.exceptionOrNull()?.message
-            }
-
-            // Products
-            val prodRes = repository.getResolvedGroceryProducts(cityId = cityId, categoryId = selectedCategoryId)
+            val prodRes = repository.getResolvedGroceryProducts(
+                cityId = cityId,
+                categoryId = selectedCategoryId,
+                searchQuery = query.ifBlank { null }
+            )
             if (prodRes.isSuccess) {
                 groceryProducts = prodRes.getOrNull() ?: emptyList()
             } else {
+                groceryProducts = emptyList()
                 groceryError = prodRes.exceptionOrNull()?.message
             }
             isGroceryLoading = false
@@ -128,13 +135,19 @@ fun HomeScreen(
         }
     }
 
-    // Trigger load on city change or category change
-    LaunchedEffect(selectedCity?.id, selectedCategoryId) {
-        val cityId = selectedCity?.id
-        if (cityId != null) {
-            loadGroceryData(cityId)
-            loadHotelsData(cityId)
-        }
+    // Categories + hotels reload when the city changes.
+    LaunchedEffect(selectedCity?.id) {
+        val cityId = selectedCity?.id ?: return@LaunchedEffect
+        loadGroceryCategories(cityId)
+        loadHotelsData(cityId)
+    }
+
+    // Products reload on city / category / search change. Debounced so typing a
+    // search doesn't spam the backend; prices are re-fetched fresh every time.
+    LaunchedEffect(selectedCity?.id, selectedCategoryId, searchQuery) {
+        val cityId = selectedCity?.id ?: return@LaunchedEffect
+        delay(350)
+        loadGroceryProducts(cityId, searchQuery)
     }
 
     // Handle single-hotel rule conflict dialog
@@ -252,9 +265,10 @@ fun HomeScreen(
                             modifier = Modifier.padding(vertical = 10.dp)
                         ) {
                             Text(
-                                text = "Fresh Groceries",
+                                text = "Fresh Groceries & Fruits",
                                 fontWeight = FontWeight.Medium,
-                                fontSize = 14.sp,
+                                fontSize = 13.sp,
+                                maxLines = 1,
                                 color = if (isGrocery) Color.White else TextSecondary
                             )
                         }
@@ -275,9 +289,10 @@ fun HomeScreen(
                             modifier = Modifier.padding(vertical = 10.dp)
                         ) {
                             Text(
-                                text = "Hotel Food",
+                                text = "Hotel Food & Dining",
                                 fontWeight = FontWeight.Medium,
-                                fontSize = 14.sp,
+                                fontSize = 13.sp,
+                                maxLines = 1,
                                 color = if (isHotel) Color.White else TextSecondary
                             )
                         }
@@ -308,7 +323,7 @@ fun HomeScreen(
                 if (groceryError != null && groceryProducts.isEmpty()) {
                     ErrorCard(
                         message = groceryError!!,
-                        onRetry = { selectedCity.id.let { loadGroceryData(it) } }
+                        onRetry = { selectedCity.id.let { loadGroceryProducts(it, searchQuery) } }
                     )
                 }
 
@@ -317,11 +332,8 @@ fun HomeScreen(
                         CircularProgressIndicator(color = NaturalPrimary)
                     }
                 } else {
-                    val filteredProducts = groceryProducts.filter {
-                        if (searchQuery.isBlank()) true
-                        else it.name.contains(searchQuery, ignoreCase = true) ||
-                                (it.description?.contains(searchQuery, ignoreCase = true) == true)
-                    }
+                    // Search is performed server-side (name=ilike); just render the results.
+                    val filteredProducts = groceryProducts
 
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
@@ -331,63 +343,20 @@ fun HomeScreen(
                         modifier = Modifier.fillMaxSize()
                     ) {
                         if (searchQuery.isBlank()) {
-                            // Featured Deals Banner from Natural Tones
+                            // Featured Deals Banner
                             item(span = { GridItemSpan(2) }) {
                                 NaturalFeaturedDealsBanner(
                                     modifier = Modifier.padding(vertical = 4.dp)
                                 )
                             }
 
-                            // Explore Categories with Natural Tones pastels
+                            // Horizontal scroll of grocery category image cards (image_url + name)
                             item(span = { GridItemSpan(2) }) {
-                                ExploreCategoriesQuickBar(
-                                    selectedCategoryId = selectedCategoryId,
+                                GroceryCategoryList(
                                     categories = categories,
+                                    selectedCategoryId = selectedCategoryId,
                                     onCategorySelected = { selectedCategoryId = it }
                                 )
-                            }
-
-                            // Category Filter Chips
-                            item(span = { GridItemSpan(2) }) {
-                                LazyRow(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.padding(vertical = 4.dp)
-                                ) {
-                                    item {
-                                        FilterChip(
-                                            selected = selectedCategoryId == null,
-                                            onClick = { selectedCategoryId = null },
-                                            label = { Text("All Items", fontWeight = FontWeight.Medium) },
-                                            leadingIcon = {
-                                                if (selectedCategoryId == null) {
-                                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                                }
-                                            },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = NaturalPrimary,
-                                                selectedLabelColor = Color.White
-                                            )
-                                        )
-                                    }
-                                    items(categories) { cat ->
-                                        FilterChip(
-                                            selected = selectedCategoryId == cat.id,
-                                            onClick = {
-                                                selectedCategoryId = if (selectedCategoryId == cat.id) null else cat.id
-                                            },
-                                            label = { Text(cat.name, fontWeight = FontWeight.Medium) },
-                                            leadingIcon = {
-                                                if (selectedCategoryId == cat.id) {
-                                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                                }
-                                            },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = NaturalPrimary,
-                                                selectedLabelColor = Color.White
-                                            )
-                                        )
-                                    }
-                                }
                             }
                         }
 
@@ -567,99 +536,6 @@ fun NaturalFeaturedDealsBanner(
     }
 }
 
-@Composable
-fun ExploreCategoriesQuickBar(
-    selectedCategoryId: String?,
-    categories: List<Category>,
-    onCategorySelected: (String?) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Explore Categories",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
-            if (selectedCategoryId != null) {
-                Text(
-                    text = "View All",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = NaturalPrimary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onCategorySelected(null) }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
-        }
-
-        // 4 Pastel Category Tiles from Natural Tones design
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            val pastelTiles = listOf(
-                Triple("Vegetables", "🥦", PastelSage),
-                Triple("Fruits", "🍎", PastelPeach),
-                Triple("Dairy", "🥛", PastelSlate),
-                Triple("Meats", "🥩", PastelMist)
-            )
-
-            pastelTiles.forEach { (name, emoji, pastelBg) ->
-                val matchedCategory = categories.find { it.name.contains(name, ignoreCase = true) }
-                val isSelected = matchedCategory != null && selectedCategoryId == matchedCategory.id
-
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(16.dp))
-                        .clickable {
-                            if (matchedCategory != null) {
-                                onCategorySelected(if (isSelected) null else matchedCategory.id)
-                            }
-                        }
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = pastelBg,
-                        border = if (isSelected) BorderStroke(2.dp, NaturalPrimary) else null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(1f)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(text = emoji, fontSize = 28.sp)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = name,
-                        fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) NaturalPrimary else TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 fun GroceryProductCard(
