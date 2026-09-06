@@ -5,9 +5,15 @@ import com.example.data.model.*
 import com.example.data.remote.SupabaseApi
 import com.example.data.remote.SupabaseClient
 import com.example.data.session.UserSessionManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 sealed class AddToCartResult {
@@ -27,6 +33,10 @@ class SndmartRepository(
 
     private val _hotelCart = MutableStateFlow<List<CartItem>>(emptyList())
     val hotelCart: StateFlow<List<CartItem>> = _hotelCart.asStateFlow()
+
+    // Background scope used to mirror the in-memory cart to the cart_items table.
+    private val cartSyncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var persistJob: Job? = null
 
     // Local in-memory state for offline/demo operation when Supabase key is unconfigured or offline
     private val _localOrders = MutableStateFlow<List<Order>>(emptyList())
@@ -445,6 +455,46 @@ class SndmartRepository(
         }
     }
 
+    // --- CART BACKEND SYNC ---
+    // The in-memory StateFlows are the UI source of truth. When a Supabase key is
+    // configured we mirror the cart to the cart_items table (so it survives across
+    // sessions / is visible to the backend) and rehydrate it on session start.
+    // Prices are NEVER stored in cart_items — they are always re-fetched fresh
+    // (see getFreshCartItems); cart_items only holds user_id/product_id/variant_id/
+    // vendor_id/city_id/quantity.
+    private fun persistCartToBackend() {
+        if (!SupabaseClient.isKeyConfigured()) return
+        val userId = sessionManager.userId.value ?: return
+        val snapshot = _groceryCart.value + _hotelCart.value
+        persistJob?.cancel()
+        persistJob = cartSyncScope.launch {
+            delay(300) // coalesce rapid stepper taps into one write
+            try {
+                api.clearCartForUser(userIdQuery = "eq.$userId")
+                for (item in snapshot) {
+                    api.insertCartItem(item.copy(id = null))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to persist cart to backend", e)
+            }
+        }
+    }
+
+    suspend fun syncCartFromBackend() {
+        if (!SupabaseClient.isKeyConfigured()) return
+        val userId = sessionManager.userId.value ?: return
+        try {
+            val res = api.getCartItems(userId = "eq.$userId")
+            if (res.isSuccessful && res.body() != null) {
+                val items = res.body()!!
+                _groceryCart.value = items.filter { it.vendorId == null }
+                _hotelCart.value = items.filter { it.vendorId != null }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to sync cart from backend", e)
+        }
+    }
+
     // --- CART OPERATIONS ---
     fun addToCart(
         productId: String,
@@ -514,11 +564,13 @@ class SndmartRepository(
                 _groceryCart.value = currentList + newItem
             }
         }
+        persistCartToBackend()
         return AddToCartResult.Success
     }
 
     fun forceClearHotelCartAndAdd(item: CartItem) {
         _hotelCart.value = listOf(item)
+        persistCartToBackend()
     }
 
     fun updateCartItemQuantity(productId: String, isHotel: Boolean, newQty: Int) {
@@ -541,6 +593,7 @@ class SndmartRepository(
                 }
             }
         }
+        persistCartToBackend()
     }
 
     fun clearCart(isHotel: Boolean) {
@@ -549,11 +602,13 @@ class SndmartRepository(
         } else {
             _groceryCart.value = emptyList()
         }
+        persistCartToBackend()
     }
 
     fun clearAllCarts() {
         _groceryCart.value = emptyList()
         _hotelCart.value = emptyList()
+        persistCartToBackend()
     }
 
     fun getCartCount(): Int {

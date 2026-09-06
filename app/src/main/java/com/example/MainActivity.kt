@@ -262,6 +262,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Rehydrate the user's cart from the cart_items table at session start.
+                // Only when the in-memory cart is empty, so items added this session
+                // are never clobbered.
+                LaunchedEffect(userId) {
+                    userId ?: return@LaunchedEffect
+                    if (repository.getCartCount() == 0) {
+                        repository.syncCartFromBackend()
+                    }
+                }
+
                 // Re-check location when app is resumed after being backgrounded >30 minutes
                 val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner) {
