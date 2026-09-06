@@ -81,6 +81,9 @@ interface SupabaseApi {
     suspend fun getVendors(
         @Query("city_id") cityId: String,
         @Query("approval_status") approvalStatus: String = "eq.approved",
+        @Query("vendor_type") vendorType: String? = null,
+        @Query("is_active") isActive: String? = null,
+        @Query("name", encoded = true) name: String? = null,
         @Query("order") order: String = "is_active.desc,is_featured.desc,name.asc"
     ): Response<List<Vendor>>
 
@@ -250,6 +253,12 @@ interface SupabaseApi {
     @GET("rest/v1/vendor_reviews")
     suspend fun getMyReviews(
         @Query("customer_id") customerId: String
+    ): Response<List<VendorReview>>
+
+    @GET("rest/v1/vendor_reviews")
+    suspend fun getVendorReviews(
+        @Query("vendor_id") vendorId: String,
+        @Query("select") select: String = "rating"
     ): Response<List<VendorReview>>
 
     // --- WALLET ---

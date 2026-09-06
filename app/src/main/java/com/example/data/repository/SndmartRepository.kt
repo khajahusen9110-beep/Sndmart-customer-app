@@ -219,12 +219,25 @@ class SndmartRepository(
     }
 
     // --- VENDORS (HOTELS) ---
-    suspend fun getHotels(cityId: String): Result<List<Vendor>> {
+    // Fetches hotels (vendor_type=hotel) for a city. When searchQuery is blank both
+    // active and inactive approved hotels are returned (inactive appended at bottom
+    // by the caller's sort). When searching, filters by name=ilike server-side.
+    suspend fun getHotels(cityId: String, searchQuery: String? = null): Result<List<Vendor>> {
         if (!SupabaseClient.isKeyConfigured()) {
-            return Result.success(DemoCatalog.HOTELS)
+            val demo = if (!searchQuery.isNullOrBlank())
+                DemoCatalog.HOTELS.filter { it.name.contains(searchQuery, ignoreCase = true) }
+            else DemoCatalog.HOTELS
+            return Result.success(demo)
         }
         return try {
-            val response = api.getVendors(cityId = "eq.$cityId")
+            val nameQuery = searchQuery?.takeIf { it.isNotBlank() }?.let {
+                "ilike.*" + java.net.URLEncoder.encode(it.trim(), "UTF-8").replace("+", "%20") + "*"
+            }
+            val response = api.getVendors(
+                cityId = "eq.$cityId",
+                vendorType = "eq.hotel",
+                name = nameQuery
+            )
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
@@ -235,6 +248,24 @@ class SndmartRepository(
         } catch (e: Exception) {
             Log.w(TAG, "Exception fetching hotels: ${e.message}", e)
             Result.success(DemoCatalog.HOTELS)
+        }
+    }
+
+    // Average vendor rating computed client-side from vendor_reviews (select=rating).
+    // Returns 0.0 when there are no reviews yet or the backend is unavailable.
+    suspend fun getVendorAverageRating(vendorId: String): Result<Double> {
+        if (!SupabaseClient.isKeyConfigured()) return Result.success(0.0)
+        return try {
+            val response = api.getVendorReviews(vendorId = "eq.$vendorId", select = "rating")
+            if (response.isSuccessful && !response.body().isNullOrEmpty()) {
+                val ratings = response.body()!!.mapNotNull { it.rating.takeIf { r -> r > 0 } }
+                Result.success(if (ratings.isNotEmpty()) ratings.average() else 0.0)
+            } else {
+                Result.success(0.0)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception fetching vendor rating: ${e.message}", e)
+            Result.success(0.0)
         }
     }
 

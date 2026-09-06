@@ -115,17 +115,17 @@ fun HomeScreen(
         }
     }
 
-    // Refresh function for hotels
-    fun loadHotelsData(cityId: String) {
+    // Refresh function for hotels. Active+featured first, then active non-featured,
+    // then inactive (by name only) — inactive hotels stay visible but de-prioritized.
+    fun loadHotelsData(cityId: String, query: String) {
         coroutineScope.launch {
             isHotelsLoading = true
             hotelsError = null
-            val res = repository.getHotels(cityId)
+            val res = repository.getHotels(cityId, searchQuery = query.ifBlank { null })
             if (res.isSuccess) {
-                // Rule: ordered is_active DESC, is_featured DESC, name ASC (active+featured first, inactive last)
                 hotels = res.getOrNull()?.sortedWith(
                     compareByDescending<Vendor> { it.isActive }
-                        .thenByDescending { it.isFeatured == true }
+                        .thenByDescending { if (it.isActive) (it.isFeatured == true) else false }
                         .thenBy { it.name }
                 ) ?: emptyList()
             } else {
@@ -139,7 +139,15 @@ fun HomeScreen(
     LaunchedEffect(selectedCity?.id) {
         val cityId = selectedCity?.id ?: return@LaunchedEffect
         loadGroceryCategories(cityId)
-        loadHotelsData(cityId)
+        loadHotelsData(cityId, "")
+    }
+
+    // Hotel search is server-side (name=ilike), debounced, only while on the hotels tab.
+    LaunchedEffect(searchQuery, browsingMode) {
+        if (browsingMode != BrowsingMode.HOTELS) return@LaunchedEffect
+        val cityId = selectedCity?.id ?: return@LaunchedEffect
+        delay(350)
+        loadHotelsData(cityId, searchQuery)
     }
 
     // Products reload on city / category / search change. Debounced so typing a
@@ -413,7 +421,7 @@ fun HomeScreen(
                 if (hotelsError != null && hotels.isEmpty()) {
                     ErrorCard(
                         message = hotelsError!!,
-                        onRetry = { selectedCity.id.let { loadHotelsData(it) } }
+                        onRetry = { selectedCity.id.let { loadHotelsData(it, searchQuery) } }
                     )
                 }
 
@@ -422,11 +430,8 @@ fun HomeScreen(
                         CircularProgressIndicator(color = NaturalPrimary)
                     }
                 } else {
-                    val filteredHotels = hotels.filter {
-                        if (searchQuery.isBlank()) true
-                        else it.name.contains(searchQuery, ignoreCase = true) ||
-                                (it.address?.contains(searchQuery, ignoreCase = true) == true)
-                    }
+                    // Search is performed server-side (name=ilike); just render the results.
+                    val filteredHotels = hotels
 
                     if (filteredHotels.isEmpty()) {
                         Box(
@@ -450,6 +455,7 @@ fun HomeScreen(
                             items(filteredHotels, key = { it.id }) { hotel ->
                                 HotelCard(
                                     vendor = hotel,
+                                    repository = repository,
                                     onClick = {
                                         onNavigateToHotelMenu(hotel.id, hotel.name)
                                     }
@@ -649,9 +655,17 @@ fun GroceryProductCard(
 @Composable
 fun HotelCard(
     vendor: Vendor,
+    repository: SndmartRepository,
     onClick: () -> Unit
 ) {
     val isOpen = vendor.isOpen && vendor.isActive
+
+    // Average rating from vendor_reviews (computed client-side). Fetched per card so
+    // only visible hotels make the call; 0.0 means "no reviews yet".
+    var avgRating by remember(vendor.id) { mutableStateOf(0.0) }
+    LaunchedEffect(vendor.id) {
+        avgRating = repository.getVendorAverageRating(vendor.id).getOrNull() ?: 0.0
+    }
 
     Card(
         modifier = Modifier
@@ -734,6 +748,25 @@ fun HotelCard(
                         contentDescription = "View Menu",
                         tint = NaturalPrimary
                     )
+                }
+
+                if (avgRating > 0) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = null,
+                            tint = TangerineOrange,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "%.1f".format(avgRating),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                            color = TextPrimary
+                        )
+                    }
                 }
 
                 if (!vendor.address.isNullOrBlank()) {
