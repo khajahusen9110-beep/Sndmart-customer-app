@@ -94,6 +94,40 @@ class SndmartRepository(
         }
     }
 
+    // --- CITY DETECTION (BACKEND RPC) ---
+    suspend fun findCityForLocation(lat: Double, lng: Double): Result<City?> {
+        return try {
+            val response = api.findCityForLocation(mapOf("p_lat" to lat, "p_lng" to lng))
+            if (response.isSuccessful && response.body() != null) {
+                val results = response.body()!!
+                if (results.isNotEmpty()) {
+                    val r = results.first()
+                    Result.success(City(id = r.cityId, name = r.cityName, status = "active"))
+                } else {
+                    Result.success(null) // Location not serviceable
+                }
+            } else {
+                val error = SupabaseClient.parseErrorMessage(response)
+                Log.e(TAG, "find_city_for_location RPC failed: $error")
+                Result.failure(Exception(error))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception calling find_city_for_location", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateProfileCityId(userId: String, cityId: String): Result<Unit> {
+        return try {
+            val response = api.updateProfile("eq.$userId", mapOf("city_id" to cityId))
+            if (response.isSuccessful) Result.success(Unit)
+            else Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception updating profile city_id", e)
+            Result.failure(e)
+        }
+    }
+
     // --- CATEGORIES ---
     suspend fun getCategories(): Result<List<Category>> {
         return try {

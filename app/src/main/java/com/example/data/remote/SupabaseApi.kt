@@ -37,6 +37,13 @@ interface SupabaseApi {
         @Query("order") order: String = "name.asc"
     ): Response<List<City>>
 
+    // --- CITY DETECTION RPC ---
+
+    @POST("rest/v1/rpc/find_city_for_location")
+    suspend fun findCityForLocation(
+        @Body body: Map<String, @JvmSuppressWildcards Any>
+    ): Response<List<CityLocationResult>>
+
     // --- PROFILES ---
 
     @GET("rest/v1/profiles")

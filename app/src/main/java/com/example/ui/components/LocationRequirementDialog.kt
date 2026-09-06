@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -41,7 +42,8 @@ fun LocationRequirementDialog(
     activeCitiesSummary: String,
     onRequestPermission: () -> Unit,
     onManualSelect: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onNotifyMe: (() -> Unit)? = null
 ) {
     Dialog(
         onDismissRequest = {
@@ -172,7 +174,7 @@ fun LocationRequirementDialog(
                     }
                     LocationDetectionState.UNSUPPORTED_AREA -> {
                         Text(
-                            text = "Out of Current Delivery Zone",
+                            text = "We're Not Available in Your Area Yet",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = NaturalBadgeRed,
@@ -180,7 +182,7 @@ fun LocationRequirementDialog(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "We detected your location as '$detectedCityName'. Sndmart currently operates live in: $activeCitiesSummary.",
+                            text = "Sndmart hasn't launched in your current location yet. We're expanding fast — stay tuned!",
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextSecondary,
                             textAlign = TextAlign.Center
@@ -239,16 +241,31 @@ fun LocationRequirementDialog(
                         }
                     }
                     LocationDetectionState.UNSUPPORTED_AREA -> {
-                        Button(
+                        if (onNotifyMe != null) {
+                            Button(
+                                onClick = onNotifyMe,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(50.dp)
+                                    .testTag("notify_me_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Notify Me When We Launch", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+                        OutlinedButton(
                             onClick = onManualSelect,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(50.dp)
+                                .height(48.dp)
                                 .testTag("choose_active_city_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
                             shape = RoundedCornerShape(16.dp)
                         ) {
-                            Text("Select Active City", fontWeight = FontWeight.Bold)
+                            Text("Browse Other Cities", fontWeight = FontWeight.Bold)
                         }
                     }
                     LocationDetectionState.PERMISSION_DENIED -> {
