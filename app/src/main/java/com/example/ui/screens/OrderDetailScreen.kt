@@ -64,6 +64,7 @@ fun OrderDetailScreen(
     var partnerRating by remember { mutableStateOf(5) }
     var partnerComment by remember { mutableStateOf("") }
     var reviewSubmitted by remember { mutableStateOf(false) }
+    var reviewedOrderIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     // Reorder loading state
     var isReordering by remember { mutableStateOf(false) }
@@ -99,6 +100,13 @@ fun OrderDetailScreen(
             } else {
                 errorMessage = oRes.exceptionOrNull()?.message
             }
+            // Resolve which orders the customer has already reviewed (for the delivered
+            // "Rate this order" prompt — only show it if no review exists yet).
+            val custId = order?.customerId
+            if (!custId.isNullOrBlank()) {
+                val reviewedRes = repository.getReviewedOrderIds(custId)
+                if (reviewedRes.isSuccess) reviewedOrderIds = reviewedRes.getOrNull() ?: emptySet()
+            }
             if (!isSilent) isLoading = false
         }
     }
@@ -117,10 +125,12 @@ fun OrderDetailScreen(
         }
     }
 
-    // Driver location polling while out for delivery
+    // Driver location polling: re-fetch the delivery_partners row every ~12s while the
+    // order is still active (confirmed → out_for_delivery). Stops once delivered/cancelled.
     LaunchedEffect(order?.status, deliveryPartner?.id) {
         val partnerId = deliveryPartner?.id
-        while (order?.status?.lowercase() == "out_for_delivery" && !partnerId.isNullOrBlank()) {
+        val activeStatuses = listOf("confirmed", "preparing", "ready", "out_for_delivery")
+        while (order != null && activeStatuses.contains(order!!.status.lowercase()) && !partnerId.isNullOrBlank()) {
             delay(12000)
             val partRes = repository.getDeliveryPartner(partnerId)
             if (partRes.isSuccess) {
@@ -193,8 +203,9 @@ fun OrderDetailScreen(
                             }
                         }
 
-                        // Rate Order Button (if delivered)
-                        if (order!!.status.lowercase() == "delivered") {
+                        // Rate Order Button (delivered + no review submitted yet for this order)
+                        val hasReviewed = reviewSubmitted || reviewedOrderIds.contains(orderId)
+                        if (order!!.status.lowercase() == "delivered" && !hasReviewed) {
                             OutlinedButton(
                                 onClick = { showReviewDialog = true },
                                 modifier = Modifier
@@ -274,7 +285,7 @@ fun OrderDetailScreen(
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        "Share this OTP with the delivery partner upon arrival",
+                                        "Share this code with your delivery partner to confirm delivery.",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = TextSecondary
                                     )
@@ -283,8 +294,10 @@ fun OrderDetailScreen(
                         }
                     }
 
-                    // 2. Live Driver info & ETA countdown
-                    if (deliveryPartner != null) {
+                    // 2. Live Driver info & ETA countdown — only while a partner is assigned
+                    //    and the order is still active (not delivered/cancelled).
+                    val activeForTracking = listOf("confirmed", "preparing", "ready", "out_for_delivery")
+                    if (deliveryPartner != null && activeForTracking.contains(currentOrder.status.lowercase())) {
                         item {
                             Card(
                                 modifier = Modifier
@@ -339,27 +352,12 @@ fun OrderDetailScreen(
                                         }
                                     }
 
-                                    if (deliveryAssignment?.estimatedDeliveryAt != null) {
+                                    if (!deliveryAssignment?.estimatedDeliveryAt.isNullOrBlank()) {
                                         Spacer(modifier = Modifier.height(12.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = PastelSage,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(10.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Icon(Icons.Outlined.AccessTime, contentDescription = null, tint = DarkGreenText, modifier = Modifier.size(18.dp))
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(
-                                                    text = "Estimated Delivery: ${deliveryAssignment!!.estimatedDeliveryAt!!.take(16).replace("T", " ")}",
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = DarkGreenText
-                                                )
-                                            }
-                                        }
+                                        EtaCountdown(
+                                            estimatedDeliveryAt = deliveryAssignment!!.estimatedDeliveryAt!!,
+                                            isDelivered = currentOrder.status.lowercase() == "delivered"
+                                        )
                                     }
 
                                     // Live coordinates indicator
@@ -484,13 +482,28 @@ fun OrderDetailScreen(
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("Need Help with this Order?", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Spacer(modifier = Modifier.height(10.dp))
+                                // Placeholder support contacts — swap for real ones before launch.
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     OutlinedButton(
                                         onClick = {
-                                            val url = "https://api.whatsapp.com/send?phone=919876543210&text=Hi%20Sndmart%20Support,%20I%20need%20help%20with%20Order%20${currentOrder.orderNumber}"
+                                            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:+910000000000"))
+                                            context.startActivity(intent)
+                                        },
+                                        modifier = Modifier.weight(1f).testTag("help_call_button"),
+                                        shape = RoundedCornerShape(20.dp)
+                                    ) {
+                                        Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(16.dp), tint = NaturalPrimary)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Call", fontSize = 12.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val text = "I need help with order ${currentOrder.orderNumber}"
+                                            val encoded = java.net.URLEncoder.encode(text, "UTF-8")
+                                            val url = "https://wa.me/910000000000?text=$encoded"
                                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                                             context.startActivity(intent)
                                         },
@@ -499,19 +512,19 @@ fun OrderDetailScreen(
                                     ) {
                                         Icon(Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(16.dp), tint = SuccessGreen)
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("WhatsApp")
+                                        Text("WhatsApp", fontSize = 12.sp)
                                     }
                                     OutlinedButton(
                                         onClick = {
-                                            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:18001234567"))
+                                            val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:support@sndmart.in?subject=${Uri.encode("Help with Order ${currentOrder.orderNumber}")}"))
                                             context.startActivity(intent)
                                         },
-                                        modifier = Modifier.weight(1f).testTag("help_call_button"),
+                                        modifier = Modifier.weight(1f).testTag("help_email_button"),
                                         shape = RoundedCornerShape(20.dp)
                                     ) {
-                                        Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(16.dp), tint = NaturalPrimary)
+                                        Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp), tint = NaturalPrimary)
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Call Us")
+                                        Text("Email", fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -729,6 +742,68 @@ fun OrderStatusStepper(
                     }
                 }
             }
+        }
+    }
+}
+
+// Live ETA countdown: estimated_delivery_at - now(), ticking every 30s. Shows
+// "Arriving any moment" once the ETA has passed but the order isn't delivered yet.
+@Composable
+fun EtaCountdown(estimatedDeliveryAt: String, isDelivered: Boolean) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(estimatedDeliveryAt) {
+        while (true) {
+            delay(30000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val etaMillis = remember(estimatedDeliveryAt) { parseIsoTimestamp(estimatedDeliveryAt) }
+    if (etaMillis <= 0L) return
+
+    val remainingMs = etaMillis - now
+    val label = when {
+        remainingMs <= 0 && isDelivered -> "Delivered"
+        remainingMs <= 0 -> "Arriving any moment"
+        else -> {
+            val totalMin = (remainingMs / 60000).toInt()
+            val h = totalMin / 60
+            val m = totalMin % 60
+            if (h > 0) "Arriving in ${h}h ${m}m" else "Arriving in ${m}m"
+        }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = PastelSage,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Outlined.AccessTime, contentDescription = null, tint = DarkGreenText, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = DarkGreenText
+            )
+        }
+    }
+}
+
+private fun parseIsoTimestamp(s: String): Long {
+    return try {
+        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        sdf.parse(s.replace("Z", "+00:00"))?.time ?: 0L
+    } catch (e: Exception) {
+        try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            sdf.parse(s.take(19))?.time ?: 0L
+        } catch (e2: Exception) {
+            0L
         }
     }
 }

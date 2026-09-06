@@ -210,6 +210,14 @@ fun WalletScreen(
                                             fontWeight = FontWeight.SemiBold,
                                             fontSize = 14.sp
                                         )
+                                        if (!txn.orderId.isNullOrBlank()) {
+                                            Text(
+                                                text = "Order #${txn.orderId.take(8)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = NaturalPrimary,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
                                         if (!txn.createdAt.isNullOrBlank()) {
                                             Text(
                                                 text = txn.createdAt.take(16).replace("T", " "),

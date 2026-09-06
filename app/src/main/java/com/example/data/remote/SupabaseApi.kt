@@ -273,6 +273,11 @@ interface SupabaseApi {
         @Query("select") select: String = "rating"
     ): Response<List<VendorReview>>
 
+    @GET("rest/v1/delivery_partner_reviews")
+    suspend fun getMyDeliveryPartnerReviews(
+        @Query("customer_id") customerId: String
+    ): Response<List<DeliveryPartnerReview>>
+
     // --- WALLET ---
 
     @GET("rest/v1/customer_wallet_transactions")
@@ -286,6 +291,9 @@ interface SupabaseApi {
     @Headers("Prefer: resolution=merge-duplicates")
     @POST("rest/v1/device_tokens")
     suspend fun registerDeviceToken(
-        @Body deviceToken: DeviceToken
+        @Body deviceToken: DeviceToken,
+        // on_conflict is REQUIRED: without it the upsert merges on the row id (new each
+        // time) and duplicate token rows pile up instead of updating the existing one.
+        @Query("on_conflict") onConflict: String = "user_id,user_type"
     ): Response<ResponseBody>
 }

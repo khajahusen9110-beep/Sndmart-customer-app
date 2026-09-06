@@ -32,6 +32,10 @@ fun ProfileScreen(
     sessionManager: UserSessionManager,
     onNavigateToCityPicker: () -> Unit,
     onNavigateToWallet: () -> Unit,
+    onNavigateToEditProfile: () -> Unit,
+    onNavigateToAddresses: () -> Unit,
+    onNavigateToMyReviews: () -> Unit,
+    onNavigateToHelp: () -> Unit,
     onRequireLogin: () -> Unit,
     onOpenSettings: () -> Unit,
     onLogoutSuccess: () -> Unit = {}
@@ -153,11 +157,33 @@ fun ProfileScreen(
                 ) {
                     Column {
                         ProfileMenuItem(
+                            icon = Icons.Outlined.Person,
+                            title = "Edit Profile",
+                            subtitle = "Update your name and phone number",
+                            onClick = {
+                                if (isLoggedIn) onNavigateToEditProfile()
+                                else onRequireLogin()
+                            },
+                            testTag = "menu_item_edit_profile"
+                        )
+                        HorizontalDivider()
+                        ProfileMenuItem(
                             icon = Icons.Outlined.LocationCity,
                             title = "Delivery City",
                             subtitle = currentCity?.let { "${it.name}, ${it.state ?: ""}" } ?: "Not selected",
                             onClick = onNavigateToCityPicker,
                             testTag = "menu_item_city"
+                        )
+                        HorizontalDivider()
+                        ProfileMenuItem(
+                            icon = Icons.Outlined.LocationOn,
+                            title = "Saved Addresses",
+                            subtitle = "Manage delivery addresses",
+                            onClick = {
+                                if (isLoggedIn) onNavigateToAddresses()
+                                else onRequireLogin()
+                            },
+                            testTag = "menu_item_addresses"
                         )
                         HorizontalDivider()
                         ProfileMenuItem(
@@ -169,6 +195,25 @@ fun ProfileScreen(
                                 else onRequireLogin()
                             },
                             testTag = "menu_item_wallet"
+                        )
+                        HorizontalDivider()
+                        ProfileMenuItem(
+                            icon = Icons.Outlined.Star,
+                            title = "My Reviews",
+                            subtitle = "Reviews you have submitted",
+                            onClick = {
+                                if (isLoggedIn) onNavigateToMyReviews()
+                                else onRequireLogin()
+                            },
+                            testTag = "menu_item_reviews"
+                        )
+                        HorizontalDivider()
+                        ProfileMenuItem(
+                            icon = Icons.Outlined.HelpOutline,
+                            title = "Help & Support",
+                            subtitle = "Call, WhatsApp or email us",
+                            onClick = onNavigateToHelp,
+                            testTag = "menu_item_help"
                         )
                         HorizontalDivider()
                         ProfileMenuItem(

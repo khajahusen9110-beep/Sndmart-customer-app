@@ -155,6 +155,20 @@ class SndmartRepository(
         }
     }
 
+    // Edit profile (name + phone) via PATCH /rest/v1/profiles?id=eq.{userId}.
+    suspend fun updateProfile(userId: String, fullName: String?, phone: String?): Result<Unit> {
+        return try {
+            val body = mutableMapOf<String, Any?>()
+            if (fullName != null) body["full_name"] = fullName
+            if (phone != null) body["phone"] = phone
+            val response = api.updateProfile("eq.$userId", body)
+            if (response.isSuccessful) Result.success(Unit)
+            else Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /**
      * Reads the logged-in user's profiles.city_id and resolves it to an active City
      * (with name). Returns null when the user has no city assigned yet (first-time flow)
@@ -753,6 +767,43 @@ class SndmartRepository(
         }
     }
 
+    // Edit an existing address.
+    suspend fun updateAddress(id: String, fields: Map<String, Any?>): Result<Unit> {
+        return try {
+            val response = api.updateAddress(idQuery = "eq.$id", body = fields)
+            if (response.isSuccessful) {
+                response.body()?.firstOrNull()?.let { updated ->
+                    _localAddresses.value = _localAddresses.value.map { if (it.id == id) updated else it }
+                }
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // Set one address as default: unset the previous default first so only one stays true.
+    suspend fun setDefaultAddress(userId: String, addressId: String): Result<Unit> {
+        return try {
+            val res = api.getAddresses(userId = "eq.$userId")
+            val current = res.body().orEmpty()
+            // 1. Unset any existing default (other than the one being promoted).
+            current.filter { it.isDefault && it.id != addressId }.forEach { prev ->
+                prev.id?.let { api.updateAddress(idQuery = "eq.$it", body = mapOf("is_default" to false)) }
+            }
+            // 2. Set the chosen address as default.
+            api.updateAddress(idQuery = "eq.$addressId", body = mapOf("is_default" to true))
+            _localAddresses.value = _localAddresses.value.map {
+                it.copy(isDefault = (it.id == addressId))
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     // --- CHECKOUT & ORDER PLACEMENT ---
     // Rule: Always fetch fresh at render time and again right before order placement — never cache a price!
     suspend fun placeOrder(
@@ -1073,6 +1124,40 @@ class SndmartRepository(
             else Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    // Reviews the customer has written (read-only lists for "My Reviews").
+    suspend fun getMyVendorReviews(customerId: String): Result<List<VendorReview>> {
+        return try {
+            val response = api.getMyReviews(customerId = "eq.$customerId")
+            if (response.isSuccessful) Result.success(response.body() ?: emptyList())
+            else Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getMyDeliveryPartnerReviews(customerId: String): Result<List<DeliveryPartnerReview>> {
+        return try {
+            val response = api.getMyDeliveryPartnerReviews(customerId = "eq.$customerId")
+            if (response.isSuccessful) Result.success(response.body() ?: emptyList())
+            else Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // Order ids the customer has already reviewed (vendor + delivery partner), used to
+    // decide whether to show the "Rate this order" prompt on a delivered order.
+    suspend fun getReviewedOrderIds(customerId: String): Result<Set<String>> {
+        return try {
+            val ids = mutableSetOf<String>()
+            getMyVendorReviews(customerId).getOrNull()?.forEach { it.orderId?.let { id -> ids.add(id) } }
+            getMyDeliveryPartnerReviews(customerId).getOrNull()?.forEach { it.orderId?.let { id -> ids.add(id) } }
+            Result.success(ids)
+        } catch (e: Exception) {
+            Result.success(emptySet())
         }
     }
 
