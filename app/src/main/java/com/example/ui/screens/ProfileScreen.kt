@@ -33,7 +33,8 @@ fun ProfileScreen(
     onNavigateToCityPicker: () -> Unit,
     onNavigateToWallet: () -> Unit,
     onRequireLogin: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onLogoutSuccess: () -> Unit = {}
 ) {
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -211,9 +212,7 @@ fun ProfileScreen(
                     onClick = {
                         sessionManager.logout()
                         showLogoutDialog = false
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar("Logged out successfully")
-                        }
+                        onLogoutSuccess()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NaturalBadgeRed),
                     shape = RoundedCornerShape(20.dp)

@@ -41,20 +41,33 @@ class UserSessionManager(context: Context) {
         }
     }
 
-    fun saveSession(token: String?, refreshToken: String?, userId: String?, email: String?, name: String? = null) {
+    fun saveSession(
+        token: String?,
+        refreshToken: String?,
+        userId: String?,
+        email: String?,
+        name: String? = null,
+        phone: String? = null
+    ) {
         prefs.edit().apply {
             putString(KEY_ACCESS_TOKEN, token)
             putString(KEY_REFRESH_TOKEN, refreshToken)
             putString(KEY_USER_ID, userId)
             putString(KEY_USER_EMAIL, email)
             if (name != null) putString(KEY_USER_NAME, name)
+            if (phone != null) putString(KEY_USER_PHONE, phone)
             apply()
         }
         SupabaseClient.userAccessToken = token
         _userId.value = userId
         _userEmail.value = email
         if (name != null) _userName.value = name
-        _isLoggedIn.value = token != null
+        if (phone != null) _userPhone.value = phone
+        _isLoggedIn.value = !token.isNullOrBlank()
+    }
+
+    fun hasSavedSession(): Boolean {
+        return !prefs.getString(KEY_ACCESS_TOKEN, null).isNullOrBlank()
     }
 
     fun updateProfileInfo(profile: Profile) {

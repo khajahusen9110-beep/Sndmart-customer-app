@@ -11,6 +11,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -284,9 +285,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Show city picker if none selected and not currently in location dialog
-                LaunchedEffect(selectedCity, showLocationDialog) {
-                    if (selectedCity == null && !showLocationDialog) {
+                // Show city picker if none selected, not currently in location dialog, and not on Auth screen
+                LaunchedEffect(selectedCity, showLocationDialog, currentDestination) {
+                    if (selectedCity == null && !showLocationDialog && currentDestination != Screen.Auth.route) {
                         showCityPicker = true
                     }
                 }
@@ -406,7 +407,7 @@ class MainActivity : ComponentActivity() {
                                             contentDescription = "Profile"
                                         )
                                     },
-                                    label = { Text("Account", fontWeight = FontWeight.Medium, fontSize = 11.sp) },
+                                    label = { Text("Profile", fontWeight = FontWeight.Medium, fontSize = 11.sp) },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_item_profile")
                                 )
@@ -415,9 +416,10 @@ class MainActivity : ComponentActivity() {
                     }
                 ) { innerPadding ->
                     Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                        val hasSavedSession = remember { sessionManager.hasSavedSession() }
                         NavHost(
                             navController = navController,
-                            startDestination = Screen.Home.route
+                            startDestination = if (hasSavedSession) Screen.Home.route else Screen.Auth.route
                         ) {
                             composable(Screen.Home.route) {
                                 HomeScreen(
@@ -522,7 +524,12 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToCityPicker = { showCityPicker = true },
                                     onNavigateToWallet = { navController.navigate(Screen.Wallet.route) },
                                     onRequireLogin = { navController.navigate(Screen.Auth.route) },
-                                    onOpenSettings = { showSupabaseSettings = true }
+                                    onOpenSettings = { showSupabaseSettings = true },
+                                    onLogoutSuccess = {
+                                        navController.navigate(Screen.Auth.route) {
+                                            popUpTo(0) { inclusive = true }
+                                        }
+                                    }
                                 )
                             }
 
@@ -538,13 +545,21 @@ class MainActivity : ComponentActivity() {
                                 AuthScreen(
                                     repository = repository,
                                     sessionManager = sessionManager,
-                                    onAuthSuccess = { hasCity ->
-                                        navController.popBackStack()
-                                        if (!hasCity) {
-                                            showCityPicker = true
+                                    onAuthSuccess = {
+                                        if (navController.previousBackStackEntry != null) {
+                                            navController.popBackStack()
+                                        } else {
+                                            navController.navigate(Screen.Home.route) {
+                                                popUpTo(Screen.Auth.route) { inclusive = true }
+                                            }
                                         }
                                     },
-                                    onBack = { navController.popBackStack() }
+                                    onBack = {
+                                        if (navController.previousBackStackEntry != null) {
+                                            navController.popBackStack()
+                                        }
+                                    },
+                                    canGoBack = navController.previousBackStackEntry != null
                                 )
                             }
                         }

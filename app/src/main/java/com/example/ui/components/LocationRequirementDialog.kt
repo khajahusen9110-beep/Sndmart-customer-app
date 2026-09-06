@@ -70,7 +70,7 @@ fun LocationRequirementDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(24.dp),
-                horizontalAlignment = Alignment.CenterVertically
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Header Icon
                 Box(
@@ -80,7 +80,7 @@ fun LocationRequirementDialog(
                         .background(
                             when (state) {
                                 LocationDetectionState.SUCCESS -> PastelSage
-                                LocationDetectionState.DETECTING -> PastelOcean
+                                LocationDetectionState.DETECTING -> PastelSky
                                 LocationDetectionState.UNSUPPORTED_AREA, LocationDetectionState.PERMISSION_DENIED -> PastelCoral
                                 else -> NaturalPrimaryContainer
                             }
@@ -174,7 +174,7 @@ fun LocationRequirementDialog(
                     }
                     LocationDetectionState.UNSUPPORTED_AREA -> {
                         Text(
-                            text = "We're Not Available in Your Area Yet",
+                            text = "Not available in your area",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = NaturalBadgeRed,
@@ -265,7 +265,7 @@ fun LocationRequirementDialog(
                                 .testTag("choose_active_city_button"),
                             shape = RoundedCornerShape(16.dp)
                         ) {
-                            Text("Browse Other Cities", fontWeight = FontWeight.Bold)
+                            Text("Pick a city", fontWeight = FontWeight.Bold)
                         }
                     }
                     LocationDetectionState.PERMISSION_DENIED -> {

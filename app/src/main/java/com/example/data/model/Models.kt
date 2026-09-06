@@ -8,7 +8,10 @@ data class City(
     val id: String = "",
     val name: String = "",
     val state: String? = null,
-    val status: String = "active" // 'active'/'inactive'/'coming_soon'
+    val status: String = "active", // 'active'/'inactive'/'coming_soon'
+    @Json(name = "center_lat") val centerLat: Double? = null,
+    @Json(name = "center_lng") val centerLng: Double? = null,
+    @Json(name = "service_radius_km") val serviceRadiusKm: Double? = null
 )
 
 @JsonClass(generateAdapter = true)

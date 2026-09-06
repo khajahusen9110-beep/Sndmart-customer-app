@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.sp
 import com.example.data.model.City
 import com.example.data.remote.SupabaseClient
@@ -204,13 +205,13 @@ fun CityPickerSheet(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Auto-Detect My City (GPS)",
+                                text = "Update my location",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
                                 color = NaturalOnPrimaryContainer
                             )
                             Text(
-                                text = "Use live GPS to detect and set delivery city",
+                                text = "Auto-detect delivery city via GPS",
                                 fontSize = 11.sp,
                                 color = TextSecondary
                             )

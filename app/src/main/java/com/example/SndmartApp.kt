@@ -16,6 +16,22 @@ class SndmartApp : Application() {
         instance = this
         sessionManager = UserSessionManager(this)
         createNotificationChannel()
+        initFirebaseSafety()
+    }
+
+    private fun initFirebaseSafety() {
+        try {
+            val app = com.google.firebase.FirebaseApp.getInstance()
+            val apiKey = app.options.apiKey
+            val isFake = apiKey.contains("FakeKey", ignoreCase = true) ||
+                         apiKey.contains("placeholder", ignoreCase = true) ||
+                         app.options.gcmSenderId == "123456789012"
+            if (isFake) {
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().isAutoInitEnabled = false
+            }
+        } catch (e: Exception) {
+            // FirebaseApp not present or not initialized
+        }
     }
 
     private fun createNotificationChannel() {

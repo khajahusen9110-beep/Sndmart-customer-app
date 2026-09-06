@@ -79,23 +79,29 @@ class SndmartRepository(
 
     // --- CITIES ---
     suspend fun getActiveCities(): Result<List<City>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.failure(Exception("Supabase API key is not configured. Configure key to load live cities."))
+        }
         return try {
             val response = api.getCities(status = "eq.active", order = "name.asc")
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.e(TAG, "Failed to fetch cities from backend: $error")
+                Log.w(TAG, "Failed to fetch cities from backend: $error")
                 Result.failure(Exception(error))
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception fetching cities from backend", e)
+            Log.w(TAG, "Exception fetching cities from backend: ${e.message}", e)
             Result.failure(e)
         }
     }
 
     // --- CITY DETECTION (BACKEND RPC) ---
     suspend fun findCityForLocation(lat: Double, lng: Double): Result<City?> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.failure(Exception("Supabase API key is not configured"))
+        }
         return try {
             val response = api.findCityForLocation(mapOf("p_lat" to lat, "p_lng" to lng))
             if (response.isSuccessful && response.body() != null) {
@@ -108,11 +114,11 @@ class SndmartRepository(
                 }
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.e(TAG, "find_city_for_location RPC failed: $error")
+                Log.w(TAG, "find_city_for_location RPC failed: $error")
                 Result.failure(Exception(error))
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception calling find_city_for_location", e)
+            Log.w(TAG, "Exception calling find_city_for_location: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -123,47 +129,56 @@ class SndmartRepository(
             if (response.isSuccessful) Result.success(Unit)
             else Result.failure(Exception(SupabaseClient.parseErrorMessage(response)))
         } catch (e: Exception) {
-            Log.e(TAG, "Exception updating profile city_id", e)
+            Log.w(TAG, "Exception updating profile city_id: ${e.message}", e)
             Result.failure(e)
         }
     }
 
     // --- CATEGORIES ---
     suspend fun getCategories(): Result<List<Category>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(DemoCatalog.CATEGORIES)
+        }
         return try {
             val response = api.getCategories()
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.e(TAG, "Failed to fetch categories: $error. Falling back to demo categories.")
+                Log.w(TAG, "Could not fetch categories: $error. Falling back to demo categories.")
                 Result.success(DemoCatalog.CATEGORIES)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception fetching categories", e)
+            Log.w(TAG, "Exception fetching categories: ${e.message}", e)
             Result.success(DemoCatalog.CATEGORIES)
         }
     }
 
     // --- VENDORS (HOTELS) ---
     suspend fun getHotels(cityId: String): Result<List<Vendor>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(DemoCatalog.HOTELS)
+        }
         return try {
             val response = api.getVendors(cityId = "eq.$cityId")
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.e(TAG, "Failed to fetch hotels: $error. Falling back to demo hotels.")
+                Log.w(TAG, "Could not fetch hotels: $error. Falling back to demo hotels.")
                 Result.success(DemoCatalog.HOTELS)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception fetching hotels", e)
+            Log.w(TAG, "Exception fetching hotels: ${e.message}", e)
             Result.success(DemoCatalog.HOTELS)
         }
     }
 
     // --- PRODUCTS & CITY STOCK RESOLUTION ---
     suspend fun getResolvedGroceryProducts(cityId: String, categoryId: String? = null): Result<List<ResolvedProduct>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(getFallbackGroceryProducts(categoryId))
+        }
         return try {
             // Generic grocery items have vendor_id IS NULL
             val catQuery = categoryId?.let { "eq.$it" }
@@ -174,7 +189,7 @@ class SndmartRepository(
             )
             if (!prodResponse.isSuccessful || prodResponse.body() == null) {
                 val error = SupabaseClient.parseErrorMessage(prodResponse)
-                Log.e(TAG, "Failed to fetch products: $error. Falling back to demo products.")
+                Log.w(TAG, "Could not fetch products: $error. Falling back to demo products.")
                 return Result.success(getFallbackGroceryProducts(categoryId))
             }
             val products = prodResponse.body()!!
@@ -203,12 +218,15 @@ class SndmartRepository(
             }
             Result.success(resolved)
         } catch (e: Exception) {
-            Log.e(TAG, "Exception fetching grocery products", e)
+            Log.w(TAG, "Exception fetching grocery products: ${e.message}", e)
             Result.success(getFallbackGroceryProducts(categoryId))
         }
     }
 
     suspend fun getHotelMenu(vendorId: String, cityId: String): Result<Pair<List<Category>, List<ResolvedProduct>>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(getFallbackHotelMenu(vendorId))
+        }
         return try {
             // Hotel's menu categories have vendor_id = that hotel
             val catResponse = api.getCategories(order = "sort_order.asc")
@@ -441,6 +459,9 @@ class SndmartRepository(
 
     // --- DELIVERY SLOTS & COUPONS ---
     suspend fun getDeliverySlots(cityId: String): Result<List<DeliverySlot>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(DemoCatalog.DELIVERY_SLOTS)
+        }
         return try {
             val response = api.getDeliverySlots(cityId = "eq.$cityId")
             if (response.isSuccessful && response.body() != null) {
@@ -454,6 +475,9 @@ class SndmartRepository(
     }
 
     suspend fun getCoupons(cityId: String): Result<List<Coupon>> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(DemoCatalog.COUPONS)
+        }
         return try {
             val response = api.getCoupons(cityId = "eq.$cityId")
             if (response.isSuccessful && response.body() != null) {

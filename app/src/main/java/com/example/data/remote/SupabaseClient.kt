@@ -21,8 +21,32 @@ object SupabaseClient {
     @Volatile
     var userAccessToken: String? = null
 
+    fun isKeyConfigured(): Boolean {
+        val key = getEffectiveAnonKey()
+        return key.isNotBlank() &&
+                !key.endsWith(".placeholder", ignoreCase = true) &&
+                !key.contains("placeholder", ignoreCase = true) &&
+                key != "DEFAULT_ANON_KEY"
+    }
+
     fun getEffectiveAnonKey(): String {
-        return customAnonKey?.takeIf { it.isNotBlank() } ?: SupabaseConfig.DEFAULT_ANON_KEY
+        val custom = customAnonKey?.takeIf { it.isNotBlank() }
+        if (custom != null) return custom
+
+        // Check if injected via BuildConfig (Secrets Gradle plugin from AI Studio secrets panel)
+        val buildConfigKey = try {
+            val field = com.example.BuildConfig::class.java.getField("SUPABASE_ANON_KEY")
+            (field.get(null) as? String)?.takeIf {
+                it.isNotBlank() &&
+                        !it.contains("placeholder", ignoreCase = true) &&
+                        it != "DEFAULT_ANON_KEY"
+            }
+        } catch (e: Exception) {
+            null
+        }
+        if (buildConfigKey != null) return buildConfigKey
+
+        return SupabaseConfig.DEFAULT_ANON_KEY
     }
 
     private val authInterceptor = Interceptor { chain ->
@@ -40,7 +64,7 @@ object SupabaseClient {
         val response = chain.proceed(request)
 
         if (!response.isSuccessful) {
-            Log.e(TAG, "Request to ${request.url} failed with HTTP ${response.code}: ${response.message}")
+            Log.w(TAG, "Request to ${request.url} returned HTTP ${response.code}: ${response.message}")
         }
         response
     }
