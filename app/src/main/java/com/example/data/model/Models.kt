@@ -163,6 +163,14 @@ data class Coupon(
 )
 
 @JsonClass(generateAdapter = true)
+data class CouponUsage(
+    val id: String? = null,
+    @Json(name = "coupon_id") val couponId: String = "",
+    @Json(name = "user_id") val userId: String = "",
+    @Json(name = "order_id") val orderId: String = ""
+)
+
+@JsonClass(generateAdapter = true)
 data class Order(
     val id: String? = null,
     @Json(name = "order_number") val orderNumber: String = "",

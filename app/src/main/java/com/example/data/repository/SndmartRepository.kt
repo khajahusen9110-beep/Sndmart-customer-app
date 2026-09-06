@@ -650,6 +650,54 @@ class SndmartRepository(
         }
     }
 
+    // Look up a single active coupon by code for a city (server-side filter).
+    suspend fun getCouponByCode(code: String, cityId: String): Result<Coupon?> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(DemoCatalog.COUPONS.find { it.code.equals(code, ignoreCase = true) })
+        }
+        return try {
+            val response = api.getCoupons(cityId = "eq.$cityId", code = "eq.$code")
+            val remote = response.body()?.firstOrNull()
+            Result.success(remote ?: DemoCatalog.COUPONS.find { it.code.equals(code, ignoreCase = true) })
+        } catch (e: Exception) {
+            Result.success(DemoCatalog.COUPONS.find { it.code.equals(code, ignoreCase = true) })
+        }
+    }
+
+    // Full client-side validation before applying/using a coupon. Returns an error
+    // message when invalid, or null when the coupon may be applied.
+    fun validateCoupon(coupon: Coupon, subtotal: Double): String? {
+        val now = System.currentTimeMillis()
+        val starts = parseIsoTime(coupon.startsAt)
+        if (starts != null && now < starts) return "Coupon is not active yet"
+        val expires = parseIsoTime(coupon.expiresAt)
+        if (expires != null && now > expires) return "Coupon has expired"
+        val limit = coupon.usageLimit
+        if (limit != null && (coupon.usedCount ?: 0) >= limit) return "Coupon usage limit reached"
+        val min = coupon.minOrderAmount ?: 0.0
+        if (subtotal < min) return "Minimum order ₹${"%.0f".format(min)} required"
+        return null
+    }
+
+    private fun parseIsoTime(s: String?): Long? {
+        if (s.isNullOrBlank()) return null
+        return try {
+            val core = if (s.length >= 19) s.substring(0, 19) else s
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            sdf.parse(core)?.time
+        } catch (e: Exception) { null }
+    }
+
+    suspend fun recordCouponUsage(couponId: String, userId: String, orderId: String) {
+        if (!SupabaseClient.isKeyConfigured()) return
+        try {
+            api.insertCouponUsage(CouponUsage(couponId = couponId, userId = userId, orderId = orderId))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to record coupon usage", e)
+        }
+    }
+
     // --- CUSTOMER ADDRESSES ---
     suspend fun getAddresses(userId: String): Result<List<CustomerAddress>> {
         return try {
@@ -752,9 +800,12 @@ class SndmartRepository(
                 )
             }
 
-            // Calculate discounts
+            // Re-validate the coupon at placement time (expiry/usage/min-order may have
+            // changed since it was applied in the cart) and compute the discount.
             var discountAmount = 0.0
-            if (coupon != null && subtotal >= (coupon.minOrderAmount ?: 0.0)) {
+            var couponApplied = false
+            if (coupon != null && validateCoupon(coupon, subtotal) == null) {
+                couponApplied = true
                 if (coupon.discountType == "percentage") {
                     discountAmount = (subtotal * coupon.discountValue) / 100.0
                     if (coupon.maxDiscountAmount != null && discountAmount > coupon.maxDiscountAmount) {
@@ -765,7 +816,19 @@ class SndmartRepository(
                 }
             }
 
-            val deliveryFee = 30.0 // Standard or from slot
+            // Delivery fee from the selected slot: free only when is_free_delivery is
+            // true AND subtotal meets the slot's min_order_amount; otherwise the slot's
+            // delivery_fee (falling back to a standard fee).
+            var deliveryFee = 30.0
+            if (slotId != null) {
+                val slotsRes = api.getDeliverySlots(cityId = "eq.$cityId")
+                val slot = slotsRes.body()?.find { it.id == slotId }
+                if (slot != null) {
+                    val minOrder = slot.minOrderAmount ?: 0.0
+                    deliveryFee = if (slot.isFreeDelivery == true && subtotal >= minOrder) 0.0
+                                  else (slot.deliveryFee ?: 30.0)
+                }
+            }
             val handlingFee = 5.0
             val totalAmount = (subtotal - discountAmount + deliveryFee + handlingFee).coerceAtLeast(0.0)
 
@@ -798,6 +861,9 @@ class SndmartRepository(
                     if (orderId != null) {
                         val finalizedItems = orderItemsToInsert.map { it.copy(orderId = orderId) }
                         api.createOrderItems(finalizedItems)
+                        if (couponApplied && coupon != null) {
+                            recordCouponUsage(coupon.id, userId, orderId)
+                        }
                     }
                 }
             } catch (e: Exception) {

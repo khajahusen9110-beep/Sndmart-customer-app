@@ -185,8 +185,15 @@ interface SupabaseApi {
     @GET("rest/v1/coupons")
     suspend fun getCoupons(
         @Query("city_id") cityId: String,
-        @Query("is_active") isActive: String = "eq.true"
+        @Query("is_active") isActive: String = "eq.true",
+        @Query("code") code: String? = null
     ): Response<List<Coupon>>
+
+    @Headers("Prefer: return=representation")
+    @POST("rest/v1/coupon_usages")
+    suspend fun insertCouponUsage(
+        @Body usage: CouponUsage
+    ): Response<List<CouponUsage>>
 
     // --- ORDERS ---
 

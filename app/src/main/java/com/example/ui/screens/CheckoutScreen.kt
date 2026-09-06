@@ -51,6 +51,10 @@ fun CheckoutScreen(
     var isPlacingOrder by remember { mutableStateOf(false) }
     var placementError by remember { mutableStateOf<String?>(null) }
 
+    // Resolve the coupon code chosen in the cart into a Coupon object so the discount
+    // is actually applied (and re-validated) at order placement.
+    var appliedCoupon by remember { mutableStateOf<Coupon?>(null) }
+
     // Payment methods
     val paymentMethods = listOf("cod" to "Cash on Delivery (COD)", "upi" to "UPI / Instant Pay", "card" to "Credit / Debit Card")
     var selectedPaymentMethod by remember { mutableStateOf("cod") }
@@ -62,6 +66,8 @@ fun CheckoutScreen(
     var newAddressLine by remember { mutableStateOf("") }
     var newLandmark by remember { mutableStateOf("") }
     var newLabel by remember { mutableStateOf("Home") }
+    var newLat by remember { mutableStateOf("") }
+    var newLng by remember { mutableStateOf("") }
 
     fun loadAddresses() {
         if (userId.isNullOrBlank()) {
@@ -84,6 +90,15 @@ fun CheckoutScreen(
 
     LaunchedEffect(userId) {
         loadAddresses()
+    }
+
+    LaunchedEffect(couponCode, cityId) {
+        if (!couponCode.isNullOrBlank() && !cityId.isNullOrBlank()) {
+            val res = repository.getCouponByCode(couponCode, cityId)
+            appliedCoupon = res.getOrNull()
+        } else {
+            appliedCoupon = null
+        }
     }
 
     Scaffold(
@@ -136,7 +151,8 @@ fun CheckoutScreen(
                                 cityId = cityId,
                                 addressId = selectedAddressId!!,
                                 slotId = slotId,
-                                paymentMethod = selectedPaymentMethod
+                                paymentMethod = selectedPaymentMethod,
+                                coupon = appliedCoupon
                             )
 
                             if (res.isSuccess) {
@@ -368,6 +384,27 @@ fun CheckoutScreen(
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp)
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = newLat,
+                            onValueChange = { newLat = it },
+                            label = { Text("Latitude") },
+                            modifier = Modifier.weight(1f).testTag("addr_lat_input"),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        OutlinedTextField(
+                            value = newLng,
+                            onValueChange = { newLng = it },
+                            label = { Text("Longitude") },
+                            modifier = Modifier.weight(1f).testTag("addr_lng_input"),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("Home", "Work", "Other").forEach { label ->
                             FilterChip(
@@ -397,6 +434,8 @@ fun CheckoutScreen(
                                 phone = newPhone,
                                 addressLine = newAddressLine,
                                 landmark = newLandmark.takeIf { it.isNotBlank() },
+                                lat = newLat.trim().toDoubleOrNull(),
+                                lng = newLng.trim().toDoubleOrNull(),
                                 isDefault = addresses.isEmpty()
                             )
                             val res = repository.addAddress(newAddr)
