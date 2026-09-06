@@ -1,0 +1,27 @@
+# Base44 dev/preview environment for the Sndmart native Android app.
+#
+# This is a NATIVE ANDROID app (Kotlin + Jetpack Compose), not a web app. It
+# cannot run interactively in the browser preview. Instead this compose builds
+# the project, renders its Compose UI through the Roborazzi screenshot tests,
+# and serves the generated screenshots on host port 3000.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.base44
+    ports:
+      - "3000:3000"
+    volumes:
+      # Bind-mount the cloned source so edits are visible and build outputs land in-repo.
+      - .:/workspace
+      # Keep the Gradle dependency cache outside the repo so it survives restarts.
+      - gradle-cache:/gradle-cache
+    working_dir: /workspace
+    command: bash /workspace/.base44/preview.sh
+    environment:
+      - BASE44_PUBLIC_HOST_SUFFIX=${BASE44_PUBLIC_HOST_SUFFIX:-preview}
+    tty: true
+    stdin_open: true
+
+volumes:
+  gradle-cache: {}

@@ -38,6 +38,7 @@ fun OrdersScreen(
     val isLoggedIn = sessionManager.isLoggedIn.collectAsState().value
 
     var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
+    var vendorNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -51,7 +52,16 @@ fun OrdersScreen(
             errorMessage = null
             val res = repository.getOrders(userId)
             if (res.isSuccess) {
-                orders = res.getOrNull() ?: emptyList()
+                val loaded = res.getOrNull() ?: emptyList()
+                orders = loaded
+                // Resolve hotel names for hotel orders (unique vendor ids only).
+                val hotelVendorIds = loaded.mapNotNull { it.vendorId }.distinct()
+                val names = mutableMapOf<String, String>()
+                for (vid in hotelVendorIds) {
+                    val n = repository.getVendorName(vid)
+                    n.getOrNull()?.takeIf { it.isNotBlank() }?.let { names[vid] = it }
+                }
+                vendorNames = names
             } else {
                 errorMessage = res.exceptionOrNull()?.message
             }
@@ -167,7 +177,11 @@ fun OrdersScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(orders, key = { it.id ?: it.orderNumber }) { order ->
-                        OrderCardItem(order = order, onClick = { order.id?.let { onNavigateToDetail(it) } })
+                        OrderCardItem(
+                            order = order,
+                            hotelName = order.vendorId?.let { vendorNames[it] },
+                            onClick = { order.id?.let { onNavigateToDetail(it) } }
+                        )
                     }
                 }
             }
@@ -178,6 +192,7 @@ fun OrdersScreen(
 @Composable
 fun OrderCardItem(
     order: Order,
+    hotelName: String?,
     onClick: () -> Unit
 ) {
     Card(
@@ -202,6 +217,23 @@ fun OrderCardItem(
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
+                    if (!hotelName.isNullOrBlank()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Store,
+                                contentDescription = null,
+                                tint = NaturalPrimary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = hotelName,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = NaturalPrimary
+                            )
+                        }
+                    }
                     if (!order.createdAt.isNullOrBlank()) {
                         Text(
                             text = order.createdAt.take(16).replace("T", " "),

@@ -108,7 +108,7 @@ fun CartScreen(
         }
     }
 
-    val isFreeDelivery = selectedSlot?.isFreeDelivery == true || (selectedSlot?.minOrderAmount != null && subtotal >= selectedSlot!!.minOrderAmount!!)
+    val isFreeDelivery = selectedSlot?.isFreeDelivery == true && subtotal >= (selectedSlot?.minOrderAmount ?: 0.0)
     val deliveryFee = if (isFreeDelivery) 0.0 else (selectedSlot?.deliveryFee ?: 30.0)
     val handlingFee = 5.0
     val totalAmount = (subtotal - discountAmount + deliveryFee + handlingFee).coerceAtLeast(0.0)
@@ -449,13 +449,16 @@ fun CartScreen(
                                         onClick = {
                                             val matched = availableCoupons.find { it.code.equals(couponInput, ignoreCase = true) }
                                             if (matched != null) {
-                                                if (subtotal >= (matched.minOrderAmount ?: 0.0)) {
+                                                val validationError = repository.validateCoupon(matched, subtotal)
+                                                if (validationError == null) {
                                                     selectedCoupon = matched
                                                     couponMessage = "Coupon applied: ${matched.code}"
                                                 } else {
-                                                    couponMessage = "Minimum order amount is ₹${matched.minOrderAmount}"
+                                                    selectedCoupon = null
+                                                    couponMessage = validationError
                                                 }
                                             } else {
+                                                selectedCoupon = null
                                                 couponMessage = "Invalid or inactive coupon code"
                                             }
                                         },

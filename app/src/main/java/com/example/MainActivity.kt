@@ -61,6 +61,12 @@ sealed class Screen(val route: String, val title: String) {
         fun createRoute(orderId: String) = "order_detail/$orderId"
     }
     object Wallet : Screen("wallet", "Wallet")
+    object MyReviews : Screen("my_reviews", "My Reviews")
+    object AddressBook : Screen("address_book", "Saved Addresses")
+    object EditProfile : Screen("edit_profile", "Edit Profile")
+    object HelpSupport : Screen("help_support/{orderNumber}", "Help & Support") {
+        fun createRoute(orderNumber: String? = null) = "help_support/${orderNumber ?: "none"}"
+    }
     object Auth : Screen("auth", "Account")
 }
 
@@ -86,6 +92,7 @@ class MainActivity : ComponentActivity() {
                 val currentDestination = currentBackStack?.destination?.route
 
                 val selectedCity by sessionManager.selectedCity.collectAsState()
+                val userId by sessionManager.userId.collectAsState()
                 var showCityPicker by remember { mutableStateOf(false) }
                 var showSupabaseSettings by remember { mutableStateOf(false) }
 
@@ -219,6 +226,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Kick off the first-time city detection flow (permission prompt -> GPS ->
+                // find_city_for_location RPC). Sets the dialog visible synchronously so the
+                // city-picker fallback doesn't race in while detection is starting.
+                fun startFirstTimeCityDetection() {
+                    showLocationDialog = true
+                    if (!locationDetector.hasLocationPermission()) {
+                        locationDetectionState = LocationDetectionState.PERMISSION_REQUIRED
+                    } else {
+                        performLocationDetectionAndCityAssignment()
+                    }
+                }
+
                 val locationPermissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestMultiplePermissions()
                 ) { permissions ->
@@ -232,13 +251,56 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Require location on app startup and auto-detect city
-                LaunchedEffect(Unit) {
-                    if (!locationDetector.hasLocationPermission()) {
-                        locationDetectionState = LocationDetectionState.PERMISSION_REQUIRED
-                        showLocationDialog = true
+                // City detection runs AFTER login (or a restored session), not on every app
+                // open. If the user already has a city (locally or on profiles.city_id), skip
+                // straight to Home. Only when profiles.city_id is null do we run the first-time
+                // GPS detection flow. Re-detection otherwise happens only on a >30min resume
+                // (see lifecycle observer below) or an explicit "Update my location" tap.
+                LaunchedEffect(userId) {
+                    val currentUserId = userId ?: return@LaunchedEffect
+                    if (selectedCity != null) return@LaunchedEffect
+                    // Logged in with no city yet: prefer the city saved on the profile.
+                    val profileCity = repository.resolveUserCity(currentUserId).getOrNull()
+                    if (profileCity != null) {
+                        sessionManager.setSelectedCity(profileCity)
                     } else {
-                        performLocationDetectionAndCityAssignment()
+                        startFirstTimeCityDetection()
+                    }
+                }
+
+                // Rehydrate the user's cart from the cart_items table at session start.
+                // Only when the in-memory cart is empty, so items added this session
+                // are never clobbered.
+                LaunchedEffect(userId) {
+                    userId ?: return@LaunchedEffect
+                    if (repository.getCartCount() == 0) {
+                        repository.syncCartFromBackend()
+                    }
+                }
+
+                // On login and every app start while logged in: upsert the FCM token so the
+                // backend can push order status updates to this device (on_conflict keeps
+                // the row unique per user). Skipped when Firebase uses placeholder creds.
+                LaunchedEffect(userId) {
+                    val currentUserId = userId ?: return@LaunchedEffect
+                    try {
+                        val app = com.google.firebase.FirebaseApp.getInstance()
+                        val apiKey = app.options.apiKey
+                        val isFake = apiKey.contains("FakeKey", ignoreCase = true) ||
+                                apiKey.contains("placeholder", ignoreCase = true) ||
+                                app.options.gcmSenderId == "1234567890"
+                        if (isFake) return@LaunchedEffect
+                        com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                            .addOnCompleteListener { task ->
+                                if (task.isSuccessful && task.result != null) {
+                                    val token = task.result
+                                    coroutineScope.launch {
+                                        repository.registerDeviceToken(currentUserId, token)
+                                    }
+                                }
+                            }
+                    } catch (e: Exception) {
+                        // Firebase not configured; skip silently
                     }
                 }
 
@@ -523,6 +585,10 @@ class MainActivity : ComponentActivity() {
                                     sessionManager = sessionManager,
                                     onNavigateToCityPicker = { showCityPicker = true },
                                     onNavigateToWallet = { navController.navigate(Screen.Wallet.route) },
+                                    onNavigateToEditProfile = { navController.navigate(Screen.EditProfile.route) },
+                                    onNavigateToAddresses = { navController.navigate(Screen.AddressBook.route) },
+                                    onNavigateToMyReviews = { navController.navigate(Screen.MyReviews.route) },
+                                    onNavigateToHelp = { navController.navigate(Screen.HelpSupport.createRoute()) },
                                     onRequireLogin = { navController.navigate(Screen.Auth.route) },
                                     onOpenSettings = { showSupabaseSettings = true },
                                     onLogoutSuccess = {
@@ -537,6 +603,41 @@ class MainActivity : ComponentActivity() {
                                 WalletScreen(
                                     repository = repository,
                                     sessionManager = sessionManager,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable(Screen.MyReviews.route) {
+                                MyReviewsScreen(
+                                    repository = repository,
+                                    sessionManager = sessionManager,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable(Screen.AddressBook.route) {
+                                AddressBookScreen(
+                                    repository = repository,
+                                    sessionManager = sessionManager,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable(Screen.EditProfile.route) {
+                                EditProfileScreen(
+                                    repository = repository,
+                                    sessionManager = sessionManager,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable(
+                                route = Screen.HelpSupport.route,
+                                arguments = listOf(navArgument("orderNumber") { type = NavType.StringType })
+                            ) { backStackEntry ->
+                                val orderNumber = backStackEntry.arguments?.getString("orderNumber")?.takeIf { it != "none" }
+                                HelpSupportScreen(
+                                    orderNumber = orderNumber,
                                     onBack = { navController.popBackStack() }
                                 )
                             }

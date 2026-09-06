@@ -1,0 +1,40 @@
+# Base44 build/preview environment for the Sndmart native Android app.
+# A native Android (Kotlin + Jetpack Compose) app cannot run interactively in a
+# web browser, so this image builds the project and renders Compose UI via the
+# Roborazzi screenshot tests. The generated screenshots are then served on port
+# 3000 as the closest faithful "preview" achievable in a web iframe.
+FROM eclipse-temurin:21-jdk-jammy
+
+ENV ANDROID_HOME=/android-sdk
+ENV ANDROID_SDK_ROOT=/android-sdk
+ENV GRADLE_USER_HOME=/gradle-cache
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:/opt/gradle-9.3.1/bin
+
+# Native libraries required by Robolectric/Roborazzi native graphics rendering,
+# plus python3 to serve the generated screenshots on port 3000.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget unzip ca-certificates \
+    libgl1 libegl1 libgles2 libxkbcommon0 libwayland-client0 \
+    libglib2.0-0 libfontconfig1 libfreetype6 libstdc++6 \
+    fonts-dejavu-core fonts-noto-core \
+    python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Android command-line tools.
+RUN mkdir -p $ANDROID_HOME/cmdline-tools && \
+    wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline.zip && \
+    unzip -q /tmp/cmdline.zip -d $ANDROID_HOME/cmdline-tools && \
+    mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest && \
+    rm /tmp/cmdline.zip
+
+# Accept licenses and install the SDK packages the project targets (API 36).
+RUN yes | sdkmanager --licenses > /dev/null 2>&1 || true
+RUN sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+# Gradle 9.3.1 (matches gradle-wrapper.properties; the wrapper script/jar are
+# not committed to this repo, so we run Gradle directly).
+RUN wget -q https://services.gradle.org/distributions/gradle-9.3.1-bin.zip -O /tmp/gradle.zip && \
+    unzip -q /tmp/gradle.zip -d /opt && \
+    rm /tmp/gradle.zip
+
+WORKDIR /workspace

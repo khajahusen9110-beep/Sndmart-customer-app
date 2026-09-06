@@ -69,7 +69,10 @@ interface SupabaseApi {
     @GET("rest/v1/categories")
     suspend fun getCategories(
         @Query("is_active") isActive: String = "eq.true",
-        @Query("order") order: String = "sort_order.asc"
+        @Query("order") order: String = "sort_order.asc",
+        @Query("vendor_type", encoded = true) vendorType: String? = null,
+        @Query("vendor_id") vendorId: String? = null,
+        @Query("city_id") cityId: String? = null
     ): Response<List<Category>>
 
     // --- VENDORS ---
@@ -78,7 +81,15 @@ interface SupabaseApi {
     suspend fun getVendors(
         @Query("city_id") cityId: String,
         @Query("approval_status") approvalStatus: String = "eq.approved",
+        @Query("vendor_type") vendorType: String? = null,
+        @Query("is_active") isActive: String? = null,
+        @Query("name", encoded = true) name: String? = null,
         @Query("order") order: String = "is_active.desc,is_featured.desc,name.asc"
+    ): Response<List<Vendor>>
+
+    @GET("rest/v1/vendors")
+    suspend fun getVendorById(
+        @Query("id") idQuery: String
     ): Response<List<Vendor>>
 
     // --- PRODUCTS ---
@@ -88,6 +99,7 @@ interface SupabaseApi {
         @Query("is_active") isActive: String = "eq.true",
         @Query("category_id") categoryId: String? = null,
         @Query("vendor_id") vendorId: String? = null,
+        @Query("name", encoded = true) name: String? = null,
         @Query("order") order: String = "is_featured.desc,name.asc"
     ): Response<List<Product>>
 
@@ -178,15 +190,22 @@ interface SupabaseApi {
     @GET("rest/v1/coupons")
     suspend fun getCoupons(
         @Query("city_id") cityId: String,
-        @Query("is_active") isActive: String = "eq.true"
+        @Query("is_active") isActive: String = "eq.true",
+        @Query("code") code: String? = null
     ): Response<List<Coupon>>
+
+    @Headers("Prefer: return=representation")
+    @POST("rest/v1/coupon_usages")
+    suspend fun insertCouponUsage(
+        @Body usage: CouponUsage
+    ): Response<List<CouponUsage>>
 
     // --- ORDERS ---
 
     @GET("rest/v1/orders")
     suspend fun getOrders(
         @Query("customer_id") customerId: String,
-        @Query("order") order: String = "id.desc"
+        @Query("order") order: String = "created_at.desc"
     ): Response<List<Order>>
 
     @GET("rest/v1/orders")
@@ -248,6 +267,17 @@ interface SupabaseApi {
         @Query("customer_id") customerId: String
     ): Response<List<VendorReview>>
 
+    @GET("rest/v1/vendor_reviews")
+    suspend fun getVendorReviews(
+        @Query("vendor_id") vendorId: String,
+        @Query("select") select: String = "rating"
+    ): Response<List<VendorReview>>
+
+    @GET("rest/v1/delivery_partner_reviews")
+    suspend fun getMyDeliveryPartnerReviews(
+        @Query("customer_id") customerId: String
+    ): Response<List<DeliveryPartnerReview>>
+
     // --- WALLET ---
 
     @GET("rest/v1/customer_wallet_transactions")
@@ -261,6 +291,9 @@ interface SupabaseApi {
     @Headers("Prefer: resolution=merge-duplicates")
     @POST("rest/v1/device_tokens")
     suspend fun registerDeviceToken(
-        @Body deviceToken: DeviceToken
+        @Body deviceToken: DeviceToken,
+        // on_conflict is REQUIRED: without it the upsert merges on the row id (new each
+        // time) and duplicate token rows pile up instead of updating the existing one.
+        @Query("on_conflict") onConflict: String = "user_id,user_type"
     ): Response<ResponseBody>
 }
