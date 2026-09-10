@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -22,8 +23,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.CartItemUi
-import com.example.data.model.Coupon
-import com.example.data.model.DeliverySlot
 import com.example.data.repository.SndmartRepository
 import com.example.ui.components.*
 import com.example.ui.theme.*
@@ -51,15 +50,6 @@ fun CartScreen(
     var isLoadingFreshPrices by remember { mutableStateOf(true) }
     var errorLoadingPrices by remember { mutableStateOf<String?>(null) }
 
-    // Coupons and Slots
-    var availableCoupons by remember { mutableStateOf<List<Coupon>>(emptyList()) }
-    var selectedCoupon by remember { mutableStateOf<Coupon?>(null) }
-    var couponInput by remember { mutableStateOf("") }
-    var couponMessage by remember { mutableStateOf<String?>(null) }
-
-    var availableSlots by remember { mutableStateOf<List<DeliverySlot>>(emptyList()) }
-    var selectedSlot by remember { mutableStateOf<DeliverySlot?>(null) }
-
     // Function to re-fetch live prices at render time
     fun fetchFreshCart() {
         if (cityId == null) return
@@ -76,21 +66,6 @@ fun CartScreen(
         }
     }
 
-    // Load slots and coupons for city
-    LaunchedEffect(cityId) {
-        if (cityId != null) {
-            val sRes = repository.getDeliverySlots(cityId)
-            if (sRes.isSuccess) {
-                availableSlots = sRes.getOrNull() ?: emptyList()
-                if (availableSlots.isNotEmpty()) selectedSlot = availableSlots.first()
-            }
-            val cRes = repository.getCoupons(cityId)
-            if (cRes.isSuccess) {
-                availableCoupons = cRes.getOrNull() ?: emptyList()
-            }
-        }
-    }
-
     // Trigger fresh price re-fetch whenever the selected cart changes or raw cart changes
     LaunchedEffect(isHotelCartSelected, rawGroceryCart, rawHotelCart, cityId) {
         fetchFreshCart()
@@ -98,20 +73,6 @@ fun CartScreen(
 
     // Calculate totals from fresh prices
     val subtotal = freshItems.sumOf { it.totalPrice }
-    var discountAmount = 0.0
-    if (selectedCoupon != null && subtotal >= (selectedCoupon!!.minOrderAmount ?: 0.0)) {
-        discountAmount = if (selectedCoupon!!.discountType == "percentage") {
-            val calc = (subtotal * selectedCoupon!!.discountValue) / 100.0
-            if (selectedCoupon!!.maxDiscountAmount != null) minOf(calc, selectedCoupon!!.maxDiscountAmount!!) else calc
-        } else {
-            selectedCoupon!!.discountValue
-        }
-    }
-
-    val isFreeDelivery = selectedSlot?.isFreeDelivery == true && subtotal >= (selectedSlot?.minOrderAmount ?: 0.0)
-    val deliveryFee = if (isFreeDelivery) 0.0 else (selectedSlot?.deliveryFee ?: 30.0)
-    val handlingFee = 5.0
-    val totalAmount = (subtotal - discountAmount + deliveryFee + handlingFee).coerceAtLeast(0.0)
 
     Scaffold(
         topBar = {
@@ -165,7 +126,7 @@ fun CartScreen(
                                     color = TextSecondary
                                 )
                                 Text(
-                                    "₹${"%.0f".format(totalAmount)}",
+                                    "₹${"%.0f".format(subtotal)}",
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = NaturalPrimary
@@ -173,7 +134,7 @@ fun CartScreen(
                             }
                             Button(
                                 onClick = {
-                                    onProceedToCheckout(isHotelCartSelected, selectedCoupon?.code, selectedSlot?.id)
+                                    onProceedToCheckout(isHotelCartSelected, null, null)
                                 },
                                 modifier = Modifier
                                     .height(48.dp)
@@ -183,7 +144,7 @@ fun CartScreen(
                             ) {
                                 Text("Proceed to Checkout", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -349,138 +310,6 @@ fun CartScreen(
                         )
                     }
 
-                    // Delivery Slot Selector
-                    if (availableSlots.isNotEmpty()) {
-                        item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Outlined.Schedule,
-                                            contentDescription = null,
-                                            tint = NaturalPrimary,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            "Select Delivery Slot",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    availableSlots.forEach { slot ->
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            RadioButton(
-                                                selected = selectedSlot?.id == slot.id,
-                                                onClick = { selectedSlot = slot },
-                                                colors = RadioButtonDefaults.colors(selectedColor = NaturalPrimary)
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Column {
-                                                Text(
-                                                    text = slot.name,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                                Text(
-                                                    text = "${slot.startTime} - ${slot.endTime}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = TextSecondary
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Coupons section
-                    item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Outlined.LocalOffer,
-                                        contentDescription = null,
-                                        tint = NaturalOceanBlue,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        "Apply Coupon",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    OutlinedTextField(
-                                        value = couponInput,
-                                        onValueChange = { couponInput = it.uppercase() },
-                                        placeholder = { Text("Enter Coupon Code") },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("coupon_input"),
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(12.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Button(
-                                        onClick = {
-                                            val matched = availableCoupons.find { it.code.equals(couponInput, ignoreCase = true) }
-                                            if (matched != null) {
-                                                val validationError = repository.validateCoupon(matched, subtotal)
-                                                if (validationError == null) {
-                                                    selectedCoupon = matched
-                                                    couponMessage = "Coupon applied: ${matched.code}"
-                                                } else {
-                                                    selectedCoupon = null
-                                                    couponMessage = validationError
-                                                }
-                                            } else {
-                                                selectedCoupon = null
-                                                couponMessage = "Invalid or inactive coupon code"
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.testTag("apply_coupon_button")
-                                    ) {
-                                        Text("Apply")
-                                    }
-                                }
-                                if (couponMessage != null) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = couponMessage!!,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = if (selectedCoupon != null) SuccessGreen else NaturalBadgeRed
-                                    )
-                                }
-                            }
-                        }
-                    }
-
                     // Bill Breakdown
                     item {
                         Card(
@@ -497,18 +326,11 @@ fun CartScreen(
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 BillRow("Item Subtotal", "₹${"%.2f".format(subtotal)}")
-                                if (discountAmount > 0) {
-                                    BillRow("Coupon Discount", "-₹${"%.2f".format(discountAmount)}", color = SuccessGreen)
-                                }
-                                BillRow(
-                                    "Delivery Fee",
-                                    if (deliveryFee == 0.0) "FREE" else "₹${"%.2f".format(deliveryFee)}"
-                                )
-                                BillRow("Handling Fee", "₹${"%.2f".format(handlingFee)}")
+                                BillRow("Delivery Fee", "Calculated at checkout", color = TextSecondary)
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                                 BillRow(
                                     "Total to Pay",
-                                    "₹${"%.2f".format(totalAmount)}",
+                                    "₹${"%.2f".format(subtotal)}",
                                     isBold = true,
                                     fontSize = 16.sp,
                                     color = NaturalPrimary

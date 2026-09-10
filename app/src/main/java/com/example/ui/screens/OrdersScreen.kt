@@ -158,7 +158,7 @@ fun OrdersScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            "No orders placed yet",
+                            "No orders yet",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -234,9 +234,10 @@ fun OrderCardItem(
                             )
                         }
                     }
-                    if (!order.createdAt.isNullOrBlank()) {
+                    val orderTime = order.placedAt ?: order.createdAt
+                    if (!orderTime.isNullOrBlank()) {
                         Text(
-                            text = order.createdAt.take(16).replace("T", " "),
+                            text = orderTime.take(16).replace("T", " "),
                             style = MaterialTheme.typography.labelSmall,
                             color = TextMuted
                         )

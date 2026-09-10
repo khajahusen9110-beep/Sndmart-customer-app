@@ -1,9 +1,11 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -13,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -20,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.CustomerAddress
 import com.example.data.repository.SndmartRepository
 import com.example.data.session.UserSessionManager
+import com.example.ui.components.AddressPickerDialog
 import com.example.ui.components.ErrorCard
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
@@ -94,13 +98,18 @@ fun AddressBookScreen(
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("No saved addresses", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Add an address to speed up checkout.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Detect your location via GPS to set exact doorstep delivery.", style = MaterialTheme.typography.bodySmall, color = TextSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Spacer(modifier = Modifier.height(20.dp))
                         Button(
                             onClick = { editing = null; showAddEdit = true },
                             colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
-                            shape = RoundedCornerShape(20.dp)
-                        ) { Text("Add Address") }
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.fillMaxWidth(0.85f).height(48.dp)
+                        ) {
+                            Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Detect My Location", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             } else {
@@ -109,6 +118,56 @@ fun AddressBookScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    // Swiggy-Style Quick Detect Location Top Card
+                    item {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { editing = null; showAddEdit = true }
+                                .testTag("detect_my_location_card"),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = PastelSage),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, NaturalPrimary.copy(alpha = 0.3f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = NaturalPrimary,
+                                    modifier = Modifier.size(38.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.MyLocation,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.padding(9.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Detect My Current Location",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NaturalOnPrimaryContainer
+                                    )
+                                    Text(
+                                        "Using high-accuracy device GPS for doorstep pin",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                }
+                                Icon(
+                                    Icons.Default.ChevronRight,
+                                    contentDescription = null,
+                                    tint = NaturalPrimary
+                                )
+                            }
+                        }
+                    }
+
                     items(addresses, key = { it.id ?: it.addressLine }) { addr ->
                         AddressCard(
                             address = addr,
@@ -141,10 +200,12 @@ fun AddressBookScreen(
     }
 
     if (showAddEdit) {
-        AddressFormDialog(
+        val userPhone = sessionManager.userPhone.collectAsState().value ?: ""
+        AddressPickerDialog(
             repository = repository,
             userId = userId ?: "",
             existing = editing,
+            defaultPhone = userPhone,
             onDismiss = { showAddEdit = false; editing = null },
             onSaved = {
                 showAddEdit = false
@@ -204,6 +265,18 @@ private fun AddressCard(
             if (!address.landmark.isNullOrBlank()) {
                 Text("Landmark: ${address.landmark}", style = MaterialTheme.typography.bodySmall, color = TextMuted)
             }
+            if (address.lat != null && address.lng != null && address.lat != 0.0) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.PinDrop, contentDescription = null, tint = NaturalPrimary, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        "Map Pin: %.4f, %.4f".format(address.lat, address.lng),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                }
+            }
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!address.isDefault) {
@@ -211,12 +284,12 @@ private fun AddressCard(
                         Text("Set Default", fontSize = 12.sp)
                     }
                 }
-                OutlinedButton(onClick = onEdit, shape = RoundedCornerShape(16.dp)) {
+                OutlinedButton(onClick = onEdit, shape = RoundedCornerShape(16.dp), modifier = Modifier.testTag("edit_address_button")) {
                     Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Edit", fontSize = 12.sp)
+                    Text("Edit on Map", fontSize = 12.sp)
                 }
-                OutlinedButton(onClick = onDelete, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = NaturalBadgeRed)) {
+                OutlinedButton(onClick = onDelete, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = NaturalBadgeRed), modifier = Modifier.testTag("delete_address_button")) {
                     Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Delete", fontSize = 12.sp)
@@ -224,71 +297,4 @@ private fun AddressCard(
             }
         }
     }
-}
-
-@Composable
-private fun AddressFormDialog(
-    repository: SndmartRepository,
-    userId: String,
-    existing: CustomerAddress?,
-    onDismiss: () -> Unit,
-    onSaved: () -> Unit
-) {
-    var label by remember { mutableStateOf(existing?.label ?: "Home") }
-    var recipientName by remember { mutableStateOf(existing?.recipientName ?: "") }
-    var phone by remember { mutableStateOf(existing?.phone ?: "") }
-    var addressLine by remember { mutableStateOf(existing?.addressLine ?: "") }
-    var landmark by remember { mutableStateOf(existing?.landmark ?: "") }
-    var saving by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (existing == null) "Add Address" else "Edit Address", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = label, onValueChange = { label = it }, label = { Text("Label (Home/Work)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = recipientName, onValueChange = { recipientName = it }, label = { Text("Recipient Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Phone") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = addressLine, onValueChange = { addressLine = it }, label = { Text("Address Line") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-                OutlinedTextField(value = landmark, onValueChange = { landmark = it }, label = { Text("Landmark (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (addressLine.isBlank() || recipientName.isBlank()) return@Button
-                    saving = true
-                    coroutineScope.launch {
-                        val base = CustomerAddress(
-                            id = existing?.id,
-                            userId = userId,
-                            label = label.ifBlank { "Home" },
-                            recipientName = recipientName,
-                            phone = phone,
-                            addressLine = addressLine,
-                            landmark = landmark.takeIf { it.isNotBlank() },
-                            isDefault = existing?.isDefault ?: false
-                        )
-                        val res = if (existing == null) repository.addAddress(base)
-                        else repository.updateAddress(existing.id ?: "", mapOf(
-                            "label" to label.ifBlank { "Home" },
-                            "recipient_name" to recipientName,
-                            "phone" to phone,
-                            "address_line" to addressLine,
-                            "landmark" to landmark.takeIf { it.isNotBlank() }
-                        ))
-                        saving = false
-                        if (res.isSuccess) onSaved()
-                    }
-                },
-                enabled = !saving && addressLine.isNotBlank() && recipientName.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
-                shape = RoundedCornerShape(20.dp)
-            ) { Text(if (saving) "Saving..." else "Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
 }

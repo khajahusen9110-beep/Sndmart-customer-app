@@ -75,7 +75,7 @@ class SndmartMessagingService : FirebaseMessagingService() {
         )
 
         val notification = NotificationCompat.Builder(this, SndmartApp.CHANNEL_ID_ORDERS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)

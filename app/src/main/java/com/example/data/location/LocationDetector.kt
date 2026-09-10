@@ -38,46 +38,8 @@ class LocationDetector(private val context: Context) {
         return fine || coarse
     }
 
-    suspend fun getCurrentCoordinates(): Location? = suspendCancellableCoroutine { continuation ->
-        if (!hasLocationPermission()) {
-            continuation.resume(null)
-            return@suspendCancellableCoroutine
-        }
-
-        try {
-            val cts = CancellationTokenSource()
-            fusedLocationClient.getCurrentLocation(
-                Priority.PRIORITY_HIGH_ACCURACY,
-                cts.token
-            ).addOnSuccessListener { location ->
-                if (location != null) {
-                    continuation.resume(location)
-                } else {
-                    // Fallback to last location
-                    fusedLocationClient.lastLocation.addOnSuccessListener { lastLoc ->
-                        continuation.resume(lastLoc)
-                    }.addOnFailureListener {
-                        continuation.resume(null)
-                    }
-                }
-            }.addOnFailureListener {
-                fusedLocationClient.lastLocation.addOnSuccessListener { lastLoc ->
-                    continuation.resume(lastLoc)
-                }.addOnFailureListener {
-                    continuation.resume(null)
-                }
-            }
-
-            continuation.invokeOnCancellation {
-                cts.cancel()
-            }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException getting location", e)
-            continuation.resume(null)
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception getting location", e)
-            continuation.resume(null)
-        }
+    suspend fun getCurrentCoordinates(): Location? {
+        return HighAccuracyLocationManager.getAccurateGpsLocation(context) {}
     }
 
     suspend fun getCityNameFromCoordinates(latitude: Double, longitude: Double): String? = withContext(Dispatchers.IO) {

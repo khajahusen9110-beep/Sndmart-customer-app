@@ -17,6 +17,7 @@ class SndmartApp : Application() {
         sessionManager = UserSessionManager(this)
         createNotificationChannel()
         initFirebaseSafety()
+        com.example.data.remote.GoogleMapsConfig.initializePlaces(this)
     }
 
     private fun initFirebaseSafety() {

@@ -381,48 +381,7 @@ object DemoCatalog {
         )
     )
 
-    val DELIVERY_SLOTS = listOf(
-        DeliverySlot(
-            id = "slot_morning",
-            name = "Morning Express",
-            startTime = "07:00 AM",
-            endTime = "09:00 AM",
-            minOrderAmount = 0.0,
-            isFreeDelivery = false,
-            deliveryFee = 25.0,
-            isActive = true
-        ),
-        DeliverySlot(
-            id = "slot_midday",
-            name = "Mid-Day Slot",
-            startTime = "11:00 AM",
-            endTime = "01:00 PM",
-            minOrderAmount = 0.0,
-            isFreeDelivery = false,
-            deliveryFee = 25.0,
-            isActive = true
-        ),
-        DeliverySlot(
-            id = "slot_evening",
-            name = "Evening Express",
-            startTime = "05:00 PM",
-            endTime = "07:00 PM",
-            minOrderAmount = 0.0,
-            isFreeDelivery = true,
-            deliveryFee = 0.0,
-            isActive = true
-        ),
-        DeliverySlot(
-            id = "slot_night",
-            name = "Dinner / Night Slot",
-            startTime = "08:00 PM",
-            endTime = "10:00 PM",
-            minOrderAmount = 0.0,
-            isFreeDelivery = false,
-            deliveryFee = 30.0,
-            isActive = true
-        )
-    )
+    val DELIVERY_SLOTS = emptyList<DeliverySlot>()
 
     val COUPONS = listOf(
         Coupon(

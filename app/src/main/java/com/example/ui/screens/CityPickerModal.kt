@@ -205,13 +205,13 @@ fun CityPickerSheet(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Update my location",
+                                text = "Detect My Location",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
                                 color = NaturalOnPrimaryContainer
                             )
                             Text(
-                                text = "Auto-detect delivery city via GPS",
+                                text = "Using High Accuracy device GPS",
                                 fontSize = 11.sp,
                                 color = TextSecondary
                             )

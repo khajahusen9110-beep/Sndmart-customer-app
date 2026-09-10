@@ -129,21 +129,126 @@ data class CustomerAddress(
     val landmark: String? = null,
     val lat: Double? = null,
     val lng: Double? = null,
+    @Json(name = "city_id") val cityId: String? = null,
     @Json(name = "is_default") val isDefault: Boolean = false
+)
+
+@JsonClass(generateAdapter = true)
+data class ExpressDeliveryConfig(
+    val enabled: Boolean = false,
+    @Json(name = "delivery_minutes") val deliveryMinutes: Int = 30,
+    @Json(name = "distance_rates") val distanceRates: List<Map<String, Any?>>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class CustomerDeliveryOptions(
+    val express: ExpressDeliveryConfig? = null,
+    @Json(name = "free_slot") val freeSlot: List<DeliverySlot>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class DeliveryChargeResult(
+    val available: Boolean = false,
+    val charge: Double? = null,
+    val reason: String? = null,
+    @Json(name = "slot_id") val slotId: String? = null
+)
+
+data class CouponValidationResult(
+    val isValid: Boolean,
+    val coupon: Coupon? = null,
+    val discountAmount: Double = 0.0,
+    val errorMessage: String? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class DeliverySlot(
     val id: String = "",
     val name: String = "",
-    @Json(name = "start_time") val startTime: String = "",
-    @Json(name = "end_time") val endTime: String = "",
+    @Json(name = "start_time") val startTime: String? = null,
+    @Json(name = "end_time") val endTime: String? = null,
+    @Json(name = "start") val start: String? = null,
+    @Json(name = "end") val end: String? = null,
     @Json(name = "min_order_amount") val minOrderAmount: Double? = 0.0,
     @Json(name = "is_free_delivery") val isFreeDelivery: Boolean? = false,
     @Json(name = "delivery_fee") val deliveryFee: Double? = 0.0,
+    @Json(name = "is_active") val isActive: Boolean? = true,
+    @Json(name = "city_id") val cityId: String? = null,
+    @Json(name = "created_at") val createdAt: String? = null
+) {
+    val displayStartTime: String
+        get() {
+            val s = startTime ?: start ?: ""
+            return if (s.length >= 8 && s.count { it == ':' } == 2) s.take(5) else s
+        }
+
+    val displayEndTime: String
+        get() {
+            val e = endTime ?: end ?: ""
+            return if (e.length >= 8 && e.count { it == ':' } == 2) e.take(5) else e
+        }
+
+    fun getEffectiveDeliveryFee(cartSubtotal: Double): Double {
+        val minOrder = minOrderAmount ?: 0.0
+        if (isFreeDelivery == true && (minOrder <= 0.0 || cartSubtotal >= minOrder)) {
+            return 0.0
+        }
+        return deliveryFee ?: 0.0
+    }
+
+    fun isFreeDeliveryEligible(cartSubtotal: Double): Boolean {
+        val minOrder = minOrderAmount ?: 0.0
+        return isFreeDelivery == true && (minOrder <= 0.0 || cartSubtotal >= minOrder)
+    }
+
+    fun amountNeededForFreeDelivery(cartSubtotal: Double): Double {
+        if (isFreeDelivery != true) return 0.0
+        val minOrder = minOrderAmount ?: 0.0
+        if (minOrder <= 0.0) return 0.0
+        return (minOrder - cartSubtotal).coerceAtLeast(0.0)
+    }
+}
+
+@JsonClass(generateAdapter = true)
+data class ExpressDeliverySettings(
+    val id: String? = null,
+    @Json(name = "city_id") val cityId: String = "",
     @Json(name = "is_active") val isActive: Boolean = true,
-    @Json(name = "city_id") val cityId: String? = null
-)
+    @Json(name = "max_delivery_minutes") val maxDeliveryMinutes: Int? = null,
+    @Json(name = "delivery_minutes") val deliveryMinutes: Int? = null,
+    @Json(name = "base_km") val baseKm: Double? = 0.0,
+    @Json(name = "base_charge") val baseCharge: Double? = 0.0,
+    @Json(name = "per_km_charge_beyond") val perKmChargeBeyond: Double? = 0.0,
+    @Json(name = "free_delivery_min_order") val freeDeliveryMinOrder: Double? = null,
+    @Json(name = "free_delivery_max_km") val freeDeliveryMaxKm: Double? = null,
+    @Json(name = "min_order_amount") val minOrderAmount: Double? = null,
+    @Json(name = "created_at") val createdAt: String? = null
+) {
+    val estimatedMinutes: Int
+        get() = maxDeliveryMinutes ?: deliveryMinutes ?: 30
+
+    fun calculateCharge(distanceKm: Double, subtotal: Double): Pair<Double, Boolean> {
+        val minFreeOrder = freeDeliveryMinOrder
+        val maxFreeKm = freeDeliveryMaxKm
+        if (minFreeOrder != null && maxFreeKm != null && subtotal >= minFreeOrder && distanceKm <= maxFreeKm) {
+            return Pair(0.0, true)
+        }
+        val bKm = baseKm ?: 0.0
+        val bCharge = baseCharge ?: 0.0
+        val perKm = perKmChargeBeyond ?: 0.0
+        val fee = if (distanceKm <= bKm) {
+            bCharge
+        } else {
+            bCharge + ((distanceKm - bKm) * perKm)
+        }
+        return Pair(fee.coerceAtLeast(0.0), false)
+    }
+
+    fun isSubtotalEligible(subtotal: Double): Boolean {
+        val minOrd = minOrderAmount ?: 0.0
+        return subtotal >= minOrd
+    }
+}
 
 @JsonClass(generateAdapter = true)
 data class Coupon(
@@ -188,7 +293,12 @@ data class Order(
     @Json(name = "handling_fee") val handlingFee: Double = 0.0,
     @Json(name = "total_amount") val totalAmount: Double = 0.0,
     @Json(name = "city_id") val cityId: String? = null,
-    @Json(name = "created_at") val createdAt: String? = null
+    @Json(name = "delivery_type") val deliveryType: String? = null,
+    @Json(name = "delivery_distance_km") val deliveryDistanceKm: Double? = null,
+    @Json(name = "delivery_option_snapshot") val deliveryOptionSnapshot: Map<String, @JvmSuppressWildcards Any?>? = null,
+    @Json(name = "placed_at") val placedAt: String? = null,
+    @Json(name = "created_at") val createdAt: String? = null,
+    @Json(name = "delivery_partners") val deliveryPartner: DeliveryPartner? = null
 )
 
 @JsonClass(generateAdapter = true)

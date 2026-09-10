@@ -2,6 +2,8 @@ package com.example.data.repository
 
 import android.util.Log
 import com.example.data.model.*
+import com.example.data.remote.ApiException
+import com.example.data.remote.SessionExpiredException
 import com.example.data.remote.SupabaseApi
 import com.example.data.remote.SupabaseClient
 import com.example.data.session.UserSessionManager
@@ -9,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +30,12 @@ class SndmartRepository(
 ) {
     private val TAG = "SndmartRepository"
 
+    val currentCity: com.example.data.model.City?
+        get() = sessionManager.selectedCity.value
+
+    val currentUserId: String?
+        get() = sessionManager.userId.value
+
     // In-memory cart items (strictly NO price column, only productId, vendorId, cityId, quantity)
     private val _groceryCart = MutableStateFlow<List<CartItem>>(emptyList())
     val groceryCart: StateFlow<List<CartItem>> = _groceryCart.asStateFlow()
@@ -39,9 +48,57 @@ class SndmartRepository(
     private var persistJob: Job? = null
 
     // Local in-memory state for offline/demo operation when Supabase key is unconfigured or offline
-    private val _localOrders = MutableStateFlow<List<Order>>(emptyList())
-    private val _localOrderItems = mutableListOf<OrderItem>()
-    private val _localAddresses = MutableStateFlow<List<CustomerAddress>>(listOf(DemoCatalog.SAMPLE_ADDRESS))
+    private val _localAddresses = MutableStateFlow<List<CustomerAddress>>(emptyList())
+
+    // --- SESSION MANAGEMENT ---
+    suspend fun refreshSession(): Result<SupabaseAuthResponse> {
+        val refreshToken = sessionManager.getRefreshToken()
+        if (refreshToken.isNullOrBlank()) {
+            sessionManager.notifySessionExpired("Your session expired, please log in again")
+            return Result.failure(SessionExpiredException("No refresh token stored"))
+        }
+        return try {
+            val response = api.refreshSession(mapOf("refresh_token" to refreshToken))
+            if (response.isSuccessful && response.body() != null) {
+                val auth = response.body()!!
+                val newAccessToken = auth.accessToken
+                val newRefreshToken = auth.refreshToken ?: refreshToken
+                if (!newAccessToken.isNullOrBlank()) {
+                    sessionManager.updateTokens(newAccessToken, newRefreshToken, auth.expiresIn)
+                    Log.i(TAG, "Session refreshed successfully via SndmartRepository.")
+                    Result.success(auth)
+                } else {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    Result.failure(SessionExpiredException("Empty access token in refresh response"))
+                }
+            } else {
+                val code = response.code()
+                val error = SupabaseClient.parseErrorMessage(response)
+                Log.w(TAG, "Refresh session failed HTTP $code: $error")
+                sessionManager.notifySessionExpired("Your session expired, please log in again")
+                Result.failure(SessionExpiredException("Session expired: $error"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception during refreshSession: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun ensureValidSession(): Result<Boolean> {
+        if (!sessionManager.isLoggedIn.value) {
+            return Result.success(false)
+        }
+        if (sessionManager.isSessionExpiredOrExpiringSoon(bufferMs = 120_000L)) {
+            Log.d(TAG, "Session token is expired or expiring soon; proactively refreshing session...")
+            val res = refreshSession()
+            return if (res.isSuccess) {
+                Result.success(true)
+            } else {
+                Result.failure(res.exceptionOrNull() ?: SessionExpiredException())
+            }
+        }
+        return Result.success(true)
+    }
 
     private fun getFallbackGroceryProducts(categoryId: String?, searchQuery: String? = null): List<ResolvedProduct> {
         val filtered = when {
@@ -144,6 +201,41 @@ class SndmartRepository(
         }
     }
 
+    suspend fun getCities(): Result<List<City>> {
+        if (!SupabaseClient.isKeyConfigured()) return Result.success(emptyList())
+        return try {
+            val response = api.getCities(status = "eq.active", order = "name.asc")
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!)
+            } else {
+                Result.success(emptyList())
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception fetching cities: ${e.message}", e)
+            Result.success(emptyList())
+        }
+    }
+
+    suspend fun findCityAndDistanceForLocation(lat: Double, lng: Double): Result<CityLocationResult?> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.failure(Exception("Supabase API key is not configured"))
+        }
+        return try {
+            val response = api.findCityForLocation(mapOf("p_lat" to lat, "p_lng" to lng))
+            if (response.isSuccessful && response.body() != null) {
+                val results = response.body()!!
+                Result.success(results.firstOrNull())
+            } else {
+                val error = SupabaseClient.parseErrorMessage(response)
+                Log.w(TAG, "find_city_for_location RPC failed: $error")
+                Result.failure(Exception(error))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception calling find_city_for_location: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun updateProfileCityId(userId: String, cityId: String): Result<Unit> {
         return try {
             val response = api.updateProfile("eq.$userId", mapOf("city_id" to cityId))
@@ -206,12 +298,16 @@ class SndmartRepository(
                 Result.success(response.body()!!)
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.w(TAG, "Could not fetch categories: $error. Falling back to demo categories.")
-                Result.success(DemoCatalog.CATEGORIES)
+                Log.w(TAG, "Could not fetch categories: $error")
+                if (response.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    return Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                }
+                Result.failure(ApiException(response.code(), error))
             }
         } catch (e: Exception) {
             Log.w(TAG, "Exception fetching categories: ${e.message}", e)
-            Result.success(DemoCatalog.CATEGORIES)
+            Result.failure(e)
         }
     }
 
@@ -233,12 +329,16 @@ class SndmartRepository(
                 Result.success(response.body()!!)
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.w(TAG, "Could not fetch grocery categories: $error. Falling back to demo.")
-                Result.success(demoGroceryCategories)
+                Log.w(TAG, "Could not fetch grocery categories: $error")
+                if (response.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    return Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                }
+                Result.failure(ApiException(response.code(), error))
             }
         } catch (e: Exception) {
             Log.w(TAG, "Exception fetching grocery categories: ${e.message}", e)
-            Result.success(demoGroceryCategories)
+            Result.failure(e)
         }
     }
 
@@ -266,12 +366,16 @@ class SndmartRepository(
                 Result.success(response.body()!!)
             } else {
                 val error = SupabaseClient.parseErrorMessage(response)
-                Log.w(TAG, "Could not fetch hotels: $error. Falling back to demo hotels.")
-                Result.success(DemoCatalog.HOTELS)
+                Log.w(TAG, "Could not fetch hotels: $error")
+                if (response.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    return Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                }
+                Result.failure(ApiException(response.code(), error))
             }
         } catch (e: Exception) {
             Log.w(TAG, "Exception fetching hotels: ${e.message}", e)
-            Result.success(DemoCatalog.HOTELS)
+            Result.failure(e)
         }
     }
 
@@ -303,6 +407,15 @@ class SndmartRepository(
         }
     }
 
+    suspend fun getVendor(vendorId: String): Result<Vendor?> {
+        return try {
+            val response = api.getVendorById(idQuery = "eq.$vendorId")
+            Result.success(response.body()?.firstOrNull())
+        } catch (e: Exception) {
+            Result.success(null)
+        }
+    }
+
     // --- PRODUCTS & CITY STOCK RESOLUTION ---
     suspend fun getResolvedGroceryProducts(
         cityId: String,
@@ -328,8 +441,12 @@ class SndmartRepository(
             )
             if (!prodResponse.isSuccessful || prodResponse.body() == null) {
                 val error = SupabaseClient.parseErrorMessage(prodResponse)
-                Log.w(TAG, "Could not fetch products: $error. Falling back to demo products.")
-                return Result.success(getFallbackGroceryProducts(categoryId))
+                Log.w(TAG, "Could not fetch products: $error")
+                if (prodResponse.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    return Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                }
+                return Result.failure(ApiException(prodResponse.code(), error))
             }
             val products = prodResponse.body()!!
 
@@ -358,7 +475,7 @@ class SndmartRepository(
             Result.success(resolved)
         } catch (e: Exception) {
             Log.w(TAG, "Exception fetching grocery products: ${e.message}", e)
-            Result.success(getFallbackGroceryProducts(categoryId))
+            Result.failure(e)
         }
     }
 
@@ -369,11 +486,16 @@ class SndmartRepository(
         return try {
             // Hotel's menu categories have vendor_id = that hotel
             val catResponse = api.getCategories(order = "sort_order.asc")
-            val categories = if (catResponse.isSuccessful && catResponse.body() != null) {
-                catResponse.body()!!.filter { it.vendorId == vendorId }
-            } else {
-                emptyList()
+            if (!catResponse.isSuccessful) {
+                val error = SupabaseClient.parseErrorMessage(catResponse)
+                Log.w(TAG, "Could not fetch hotel categories: $error")
+                if (catResponse.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    return Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                }
+                return Result.failure(ApiException(catResponse.code(), error))
             }
+            val categories = catResponse.body()?.filter { it.vendorId == vendorId } ?: emptyList()
 
             // Products for this hotel
             val prodResponse = api.getProducts(
@@ -381,7 +503,13 @@ class SndmartRepository(
                 vendorId = "eq.$vendorId"
             )
             if (!prodResponse.isSuccessful || prodResponse.body() == null) {
-                return Result.success(getFallbackHotelMenu(vendorId))
+                val error = SupabaseClient.parseErrorMessage(prodResponse)
+                Log.w(TAG, "Could not fetch hotel products: $error")
+                if (prodResponse.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    return Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                }
+                return Result.failure(ApiException(prodResponse.code(), error))
             }
             val products = prodResponse.body()!!
 
@@ -415,7 +543,7 @@ class SndmartRepository(
             Result.success(Pair(categories, resolved))
         } catch (e: Exception) {
             Log.e(TAG, "Exception fetching hotel menu", e)
-            Result.success(getFallbackHotelMenu(vendorId))
+            Result.failure(e)
         }
     }
 
@@ -492,14 +620,16 @@ class SndmartRepository(
         val snapshot = _groceryCart.value + _hotelCart.value
         persistJob?.cancel()
         persistJob = cartSyncScope.launch {
-            delay(300) // coalesce rapid stepper taps into one write
             try {
+                delay(300) // coalesce rapid stepper taps into one write
                 api.clearCartForUser(userIdQuery = "eq.$userId")
                 for (item in snapshot) {
                     api.insertCartItem(item.copy(id = null))
                 }
+            } catch (e: CancellationException) {
+                // Debounce cancellation when user rapidly updates cart - normal lifecycle, ignore
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to persist cart to backend", e)
+                Log.w(TAG, "Failed to persist cart to backend: ${e.message}")
             }
         }
     }
@@ -642,19 +772,281 @@ class SndmartRepository(
     }
 
     // --- DELIVERY SLOTS & COUPONS ---
+    // Fallback slot configurations matching the city's delivery slot setup if backend table query lacks select permissions
+    fun getCityDefaultSlots(cityId: String): List<DeliverySlot> {
+        val cleanCityId = cityId.removePrefix("eq.")
+        return listOf(
+            DeliverySlot(
+                id = "b0000001-0000-0000-0000-000000000001",
+                cityId = cleanCityId,
+                name = "Morning (9 AM - 12 PM)",
+                startTime = "09:00",
+                endTime = "12:00",
+                start = "09:00",
+                end = "12:00",
+                minOrderAmount = 0.0,
+                isFreeDelivery = false,
+                deliveryFee = 30.0,
+                isActive = true
+            ),
+            DeliverySlot(
+                id = "b0000001-0000-0000-0000-000000000002",
+                cityId = cleanCityId,
+                name = "Afternoon (12 PM - 4 PM)",
+                startTime = "12:00",
+                endTime = "16:00",
+                start = "12:00",
+                end = "16:00",
+                minOrderAmount = 0.0,
+                isFreeDelivery = false,
+                deliveryFee = 30.0,
+                isActive = true
+            ),
+            DeliverySlot(
+                id = "b0000001-0000-0000-0000-000000000003",
+                cityId = cleanCityId,
+                name = "Evening (4 PM - 9 PM)",
+                startTime = "16:00",
+                endTime = "21:00",
+                start = "16:00",
+                end = "21:00",
+                minOrderAmount = 199.0,
+                isFreeDelivery = true,
+                deliveryFee = 30.0,
+                isActive = true
+            )
+        )
+    }
+
     suspend fun getDeliverySlots(cityId: String): Result<List<DeliverySlot>> {
         if (!SupabaseClient.isKeyConfigured()) {
-            return Result.success(DemoCatalog.DELIVERY_SLOTS)
+            return Result.success(getCityDefaultSlots(cityId))
         }
         return try {
-            val response = api.getDeliverySlots(cityId = "eq.$cityId")
+            val queryCityId = if (cityId.startsWith("eq.")) cityId else "eq.$cityId"
+            val response = api.getDeliverySlots(cityId = queryCityId, order = "start_time.asc")
+            if (response.isSuccessful && response.body() != null) {
+                val slots = response.body()!!.filter { it.isActive != false }
+                Result.success(slots)
+            } else {
+                val err = response.errorBody()?.string() ?: "HTTP ${response.code()}"
+                Log.w(TAG, "Delivery slots unavailable from backend ($err)")
+                Result.success(emptyList())
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception fetching delivery slots: ${e.message}")
+            Result.success(emptyList())
+        }
+    }
+
+    suspend fun getExpressDeliverySettings(cityId: String): Result<ExpressDeliverySettings?> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.success(null)
+        }
+        return try {
+            val queryCityId = if (cityId.startsWith("eq.")) cityId else "eq.$cityId"
+            val response = api.getExpressDeliverySettings(cityId = queryCityId)
+            if (response.isSuccessful && response.body() != null) {
+                val settings = response.body()!!.firstOrNull { it.isActive }
+                Result.success(settings)
+            } else {
+                val err = response.errorBody()?.string() ?: "HTTP ${response.code()}"
+                Log.w(TAG, "Express delivery settings unavailable: $err")
+                Result.success(null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception fetching express delivery settings: ${e.message}", e)
+            Result.success(null)
+        }
+    }
+
+    suspend fun resolveDeliveryDistanceKm(
+        address: CustomerAddress?,
+        cityId: String?,
+        vendorId: String?,
+        isHotel: Boolean
+    ): Double {
+        if (address == null || address.lat == null || address.lng == null) {
+            return 1.0
+        }
+        val userLat = address.lat
+        val userLng = address.lng
+
+        if (isHotel && !vendorId.isNullOrBlank()) {
+            val vendor = getVendor(vendorId).getOrNull()
+            if (vendor != null && vendor.latitude != null && vendor.longitude != null) {
+                return calculateHaversineDistanceKm(userLat, userLng, vendor.latitude, vendor.longitude)
+            }
+        }
+
+        // For grocery, check city center coordinates
+        val cleanCityId = cityId?.removePrefix("eq.")
+        val cities = getCities().getOrNull() ?: emptyList()
+        val city = cities.find { it.id == cleanCityId } ?: cities.firstOrNull()
+        if (city != null && city.centerLat != null && city.centerLng != null) {
+            return calculateHaversineDistanceKm(userLat, userLng, city.centerLat, city.centerLng)
+        }
+
+        // Fallback to RPC findCityAndDistanceForLocation if available
+        val locRes = findCityAndDistanceForLocation(userLat, userLng).getOrNull()
+        if (locRes != null && locRes.distanceKm != null && locRes.distanceKm > 0.0) {
+            return locRes.distanceKm
+        }
+
+        // Fallback to regional hub coordinates (e.g. Sindhanur fulfillment warehouse: 15.7667, 76.7583)
+        val knownCoords = mapOf(
+            "sindhanur" to Pair(15.7667, 76.7583),
+            "raichur" to Pair(16.2120, 77.3439),
+            "bellary" to Pair(15.1394, 76.9214),
+            "ballari" to Pair(15.1394, 76.9214),
+            "gangavathi" to Pair(15.4326, 76.5312),
+            "manvi" to Pair(15.9922, 77.0506),
+            "koppal" to Pair(15.3524, 76.1557)
+        )
+        val cityName = city?.name?.trim()?.lowercase(java.util.Locale.ROOT) ?: "sindhanur"
+        val hubCoords = knownCoords[cityName] ?: knownCoords["sindhanur"]
+        if (hubCoords != null) {
+            return calculateHaversineDistanceKm(userLat, userLng, hubCoords.first, hubCoords.second)
+        }
+
+        return 1.0
+    }
+
+    suspend fun getCustomerDeliveryOptions(cityId: String): Result<CustomerDeliveryOptions> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.failure(Exception("Supabase API key is not configured"))
+        }
+        return try {
+            val cleanCityId = if (cityId.startsWith("eq.")) cityId.removePrefix("eq.") else cityId
+            val response = api.getCustomerDeliveryOptions(mapOf("p_city_id" to cleanCityId))
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
-                Result.success(DemoCatalog.DELIVERY_SLOTS)
+                val err = SupabaseClient.parseErrorMessage(response)
+                Log.w(TAG, "Failed to get customer delivery options: $err")
+                Result.failure(Exception(err))
             }
         } catch (e: Exception) {
-            Result.success(DemoCatalog.DELIVERY_SLOTS)
+            Log.w(TAG, "Exception getting customer delivery options: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun calculateCityDeliveryCharge(
+        cityId: String,
+        deliveryType: String,
+        distanceKm: Double,
+        orderAmount: Double
+    ): Result<DeliveryChargeResult> {
+        if (!SupabaseClient.isKeyConfigured()) {
+            return Result.failure(Exception("Supabase API key is not configured"))
+        }
+        return try {
+            val cleanCityId = if (cityId.startsWith("eq.")) cityId.removePrefix("eq.") else cityId
+            val payload = mapOf(
+                "p_city_id" to cleanCityId,
+                "p_delivery_type" to deliveryType,
+                "p_distance_km" to distanceKm,
+                "p_order_amount" to orderAmount
+            )
+            val response = api.calculateCityDeliveryCharge(payload)
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!)
+            } else {
+                val err = SupabaseClient.parseErrorMessage(response)
+                Log.w(TAG, "calculate_city_delivery_charge failed: $err")
+                Result.failure(Exception(err))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception in calculate_city_delivery_charge: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun validateAndApplyCoupon(
+        code: String,
+        cityId: String,
+        subtotal: Double,
+        userId: String?
+    ): Result<CouponValidationResult> {
+        val cleanCityId = if (cityId.startsWith("eq.")) cityId.removePrefix("eq.") else cityId
+        val trimmedCode = code.trim().uppercase()
+        if (trimmedCode.isBlank()) {
+            return Result.success(CouponValidationResult(isValid = false, errorMessage = "Please enter a coupon code"))
+        }
+
+        // 1. Authoritative check with Supabase coupons table
+        return try {
+            val response = api.getCoupons(cityId = "eq.$cleanCityId", code = "eq.$trimmedCode")
+            val coupon = response.body()?.firstOrNull()
+            if (coupon == null) {
+                return Result.success(
+                    CouponValidationResult(
+                        isValid = false,
+                        errorMessage = "Invalid or inactive coupon for this city"
+                    )
+                )
+            }
+
+            if (!coupon.isActive) {
+                return Result.success(
+                    CouponValidationResult(isValid = false, coupon = coupon, errorMessage = "This coupon is no longer active")
+                )
+            }
+
+            val now = System.currentTimeMillis()
+            val starts = parseIsoTime(coupon.startsAt)
+            if (starts != null && now < starts) {
+                return Result.success(
+                    CouponValidationResult(isValid = false, coupon = coupon, errorMessage = "Coupon is not active yet")
+                )
+            }
+
+            val expires = parseIsoTime(coupon.expiresAt)
+            if (expires != null && now > expires) {
+                return Result.success(
+                    CouponValidationResult(isValid = false, coupon = coupon, errorMessage = "Coupon has expired")
+                )
+            }
+
+            val minOrder = coupon.minOrderAmount ?: 0.0
+            if (subtotal < minOrder) {
+                return Result.success(
+                    CouponValidationResult(
+                        isValid = false,
+                        coupon = coupon,
+                        errorMessage = "Minimum order of ₹${"%.0f".format(minOrder)} required for this coupon"
+                    )
+                )
+            }
+
+            val limit = coupon.usageLimit
+            if (limit != null && (coupon.usedCount ?: 0) >= limit) {
+                return Result.success(
+                    CouponValidationResult(isValid = false, coupon = coupon, errorMessage = "Coupon usage limit reached")
+                )
+            }
+
+            var discount = if (coupon.discountType == "percentage") {
+                (subtotal * coupon.discountValue) / 100.0
+            } else {
+                coupon.discountValue
+            }
+            if (coupon.maxDiscountAmount != null && discount > coupon.maxDiscountAmount) {
+                discount = coupon.maxDiscountAmount
+            }
+            discount = discount.coerceAtMost(subtotal)
+
+            Result.success(
+                CouponValidationResult(
+                    isValid = true,
+                    coupon = coupon,
+                    discountAmount = discount
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Coupon validation failed", e)
+            Result.failure(e)
         }
     }
 
@@ -727,13 +1119,28 @@ class SndmartRepository(
         return try {
             val response = api.getAddresses(userId = "eq.$userId")
             if (response.isSuccessful && response.body() != null) {
-                val list = response.body()!!
-                Result.success(if (list.isNotEmpty()) list else _localAddresses.value)
+                Result.success(response.body()!!)
+            } else if (response.code() == 401) {
+                sessionManager.notifySessionExpired("Your session expired, please log in again")
+                Result.failure(SessionExpiredException("Your session expired, please log in again"))
             } else {
                 Result.success(_localAddresses.value)
             }
         } catch (e: Exception) {
-            Result.success(_localAddresses.value)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAddressById(addressId: String): Result<CustomerAddress?> {
+        return try {
+            val response = api.getAddressById(idQuery = "eq.$addressId")
+            if (response.isSuccessful && !response.body().isNullOrEmpty()) {
+                Result.success(response.body()!!.first())
+            } else {
+                Result.success(_localAddresses.value.find { it.id == addressId })
+            }
+        } catch (e: Exception) {
+            Result.success(_localAddresses.value.find { it.id == addressId })
         }
     }
 
@@ -814,7 +1221,10 @@ class SndmartRepository(
         addressId: String,
         slotId: String?,
         paymentMethod: String,
-        coupon: Coupon? = null
+        coupon: Coupon? = null,
+        deliveryType: String = "free_slot",
+        deliveryDistanceKm: Double? = null,
+        deliveryOptionSnapshot: Map<String, Any?>? = null
     ): Result<Order> {
         return try {
             val rawCart = if (isHotel) _hotelCart.value else _groceryCart.value
@@ -861,85 +1271,131 @@ class SndmartRepository(
                 )
             }
 
-            // Re-validate the coupon at placement time (expiry/usage/min-order may have
-            // changed since it was applied in the cart) and compute the discount.
-            var discountAmount = 0.0
+            // 1. Authoritative delivery charge calculation based on delivery_slots and express_delivery_settings
+            val cleanCityId = if (cityId.startsWith("eq.")) cityId.removePrefix("eq.") else cityId
+            val distance = deliveryDistanceKm ?: 0.0
+            val isExpress = deliveryType == "express"
+
+            var authoritativeDeliveryFee = 0.0
+            var authoritativeSlotId: String? = null
+            val finalDeliveryType: String
+
+            if (isExpress) {
+                val expressSettings = getExpressDeliverySettings(cleanCityId).getOrNull()
+                if (expressSettings == null || !expressSettings.isActive) {
+                    return Result.failure(Exception("Express delivery is currently not available in this area"))
+                }
+                if (!expressSettings.isSubtotalEligible(subtotal)) {
+                    val minOrd = expressSettings.minOrderAmount ?: 0.0
+                    return Result.failure(Exception("Minimum order ₹${"%.0f".format(minOrd)} required for Express Delivery"))
+                }
+                val (fee, _) = expressSettings.calculateCharge(distance, subtotal)
+                authoritativeDeliveryFee = fee
+                authoritativeSlotId = null
+                finalDeliveryType = "express"
+            } else {
+                val slots = getDeliverySlots(cleanCityId).getOrNull() ?: emptyList()
+                if (slots.isEmpty()) {
+                    return Result.failure(Exception("Scheduled delivery is currently not available in this area"))
+                }
+                val matchedSlot = slots.find { it.id == slotId } ?: slots.first()
+                authoritativeDeliveryFee = matchedSlot.getEffectiveDeliveryFee(subtotal)
+                authoritativeSlotId = matchedSlot.id
+                finalDeliveryType = "scheduled"
+            }
+
+            // 3. Authoritative coupon validation via Supabase
+            var authoritativeDiscount = 0.0
             var couponApplied = false
-            if (coupon != null && validateCoupon(coupon, subtotal) == null) {
-                couponApplied = true
-                if (coupon.discountType == "percentage") {
-                    discountAmount = (subtotal * coupon.discountValue) / 100.0
-                    if (coupon.maxDiscountAmount != null && discountAmount > coupon.maxDiscountAmount) {
-                        discountAmount = coupon.maxDiscountAmount
-                    }
+            var authoritativeCoupon: Coupon? = null
+            if (coupon != null && coupon.code.isNotBlank()) {
+                val couponValidation = validateAndApplyCoupon(
+                    code = coupon.code,
+                    cityId = cleanCityId,
+                    subtotal = subtotal,
+                    userId = userId
+                ).getOrNull()
+
+                if (couponValidation != null && couponValidation.isValid) {
+                    authoritativeDiscount = couponValidation.discountAmount
+                    couponApplied = true
+                    authoritativeCoupon = couponValidation.coupon ?: coupon
                 } else {
-                    discountAmount = coupon.discountValue
+                    Log.w(TAG, "Coupon validation failed at placement: ${couponValidation?.errorMessage}")
                 }
             }
 
-            // Delivery fee from the selected slot: free only when is_free_delivery is
-            // true AND subtotal meets the slot's min_order_amount; otherwise the slot's
-            // delivery_fee (falling back to a standard fee).
-            var deliveryFee = 30.0
-            if (slotId != null) {
-                val slotsRes = api.getDeliverySlots(cityId = "eq.$cityId")
-                val slot = slotsRes.body()?.find { it.id == slotId }
-                if (slot != null) {
-                    val minOrder = slot.minOrderAmount ?: 0.0
-                    deliveryFee = if (slot.isFreeDelivery == true && subtotal >= minOrder) 0.0
-                                  else (slot.deliveryFee ?: 30.0)
-                }
-            }
+            // 4. Final total calculated from backend-authoritative values
             val handlingFee = 5.0
-            val totalAmount = (subtotal - discountAmount + deliveryFee + handlingFee).coerceAtLeast(0.0)
+            val totalAmount = (subtotal - authoritativeDiscount + authoritativeDeliveryFee + handlingFee).coerceAtLeast(0.0)
+
+            // 5. Construct snapshot & create order via existing Supabase order flow
+            val resolvedSnapshot = deliveryOptionSnapshot ?: mapOf(
+                "delivery_type" to deliveryType,
+                "delivery_fee" to authoritativeDeliveryFee,
+                "distance_km" to distance,
+                "slot_id" to authoritativeSlotId
+            )
 
             val orderNumber = "SND-${System.currentTimeMillis().toString().takeLast(8)}"
-            val paymentStatus = if (paymentMethod.lowercase() == "cod") "cod" else "pending"
+            val mappedPaymentMethod = when (paymentMethod.lowercase()) {
+                "cod" -> "cash"
+                "upi" -> "upi"
+                "card" -> "card"
+                "cash" -> "cash"
+                "online" -> "online"
+                else -> "cash"
+            }
+            val paymentStatus = if (paymentMethod.lowercase() == "cod" || mappedPaymentMethod == "cash") "cod" else "pending"
 
             val order = Order(
                 orderNumber = orderNumber,
                 customerId = userId,
                 vendorId = vendorId,
                 addressId = addressId,
-                slotId = slotId,
+                slotId = authoritativeSlotId?.takeIf { it.isNotBlank() },
                 status = "pending",
-                paymentMethod = paymentMethod,
+                paymentMethod = mappedPaymentMethod,
                 paymentStatus = paymentStatus,
                 subtotal = subtotal,
-                discountAmount = discountAmount,
-                deliveryFee = deliveryFee,
+                discountAmount = authoritativeDiscount,
+                deliveryFee = authoritativeDeliveryFee,
                 handlingFee = handlingFee,
                 totalAmount = totalAmount,
-                cityId = cityId
+                cityId = cleanCityId,
+                deliveryType = finalDeliveryType,
+                deliveryDistanceKm = distance,
+                deliveryOptionSnapshot = resolvedSnapshot
             )
 
-            var placedOrder: Order? = null
-            try {
-                val createOrderResponse = api.createOrder(order)
+            val placedOrder: Order = try {
+                var createOrderResponse = api.createOrder(order)
+                if (!createOrderResponse.isSuccessful && order.slotId != null) {
+                    val err = createOrderResponse.errorBody()?.string().orEmpty()
+                    if (err.contains("slot_id") || err.contains("foreign key") || err.contains("fkey")) {
+                        Log.w(TAG, "Retrying order creation without slot_id due to foreign key constraint: $err")
+                        createOrderResponse = api.createOrder(order.copy(slotId = null))
+                    }
+                }
                 if (createOrderResponse.isSuccessful && !createOrderResponse.body().isNullOrEmpty()) {
-                    placedOrder = createOrderResponse.body()!!.first()
-                    val orderId = placedOrder.id
+                    val created = createOrderResponse.body()!!.first()
+                    val orderId = created.id
                     if (orderId != null) {
                         val finalizedItems = orderItemsToInsert.map { it.copy(orderId = orderId) }
                         api.createOrderItems(finalizedItems)
-                        if (couponApplied && coupon != null) {
-                            recordCouponUsage(coupon.id, userId, orderId)
+                        if (couponApplied && authoritativeCoupon != null) {
+                            recordCouponUsage(authoritativeCoupon.id, userId, orderId)
                         }
                     }
+                    created
+                } else {
+                    val err = createOrderResponse.errorBody()?.string() ?: "Code ${createOrderResponse.code()}"
+                    Log.e(TAG, "Remote order creation failed: $err")
+                    return Result.failure(Exception("Failed to place order: $err"))
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Remote order creation failed: ${e.message}")
-            }
-
-            if (placedOrder == null) {
-                val localId = "order_${System.currentTimeMillis()}"
-                placedOrder = order.copy(id = localId)
-                _localOrders.value = listOf(placedOrder) + _localOrders.value
-                _localOrderItems.addAll(orderItemsToInsert.map { it.copy(orderId = localId) })
-            } else {
-                _localOrders.value = listOf(placedOrder) + _localOrders.value
-                val oId = placedOrder.id ?: ""
-                _localOrderItems.addAll(orderItemsToInsert.map { it.copy(orderId = oId) })
+                Log.e(TAG, "Remote order creation failed", e)
+                return Result.failure(e)
             }
 
             // Clear relevant cart
@@ -955,85 +1411,104 @@ class SndmartRepository(
     // --- ORDERS (LIST & DETAIL) ---
     suspend fun getOrders(userId: String): Result<List<Order>> {
         return try {
-            val response = api.getOrders(customerId = "eq.$userId")
+            val response = api.getOrders(customerId = "eq.$userId", order = "placed_at.desc")
             if (response.isSuccessful && response.body() != null) {
-                val remoteOrders = response.body()!!
-                val combined = (remoteOrders + _localOrders.value).distinctBy { it.id }
-                Result.success(combined)
+                Result.success(response.body()!!)
+            } else if (response.code() == 401) {
+                sessionManager.notifySessionExpired("Your session expired, please log in again")
+                Result.failure(SessionExpiredException("Your session expired, please log in again"))
+            } else if (response.code() == 400) {
+                // If placed_at column is not recognized, fallback to created_at.desc
+                val fallback = api.getOrders(customerId = "eq.$userId", order = "created_at.desc")
+                if (fallback.isSuccessful && fallback.body() != null) {
+                    Result.success(fallback.body()!!)
+                } else if (fallback.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                } else {
+                    Result.failure(Exception("Failed to fetch orders: ${fallback.code()} ${fallback.message()}"))
+                }
             } else {
-                Result.success(_localOrders.value)
+                Result.failure(Exception("Failed to fetch orders: ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
-            Result.success(_localOrders.value)
+            Result.failure(e)
         }
     }
 
     suspend fun getOrderById(orderId: String): Result<Order> {
         return try {
-            val response = api.getOrderById(idQuery = "eq.$orderId")
+            val selectJoin = "*,delivery_partners(id,name,phone,latitude,longitude,vehicle_type,vehicle_number)"
+            val response = api.getOrderById(idQuery = "eq.$orderId", select = selectJoin)
             if (response.isSuccessful && !response.body().isNullOrEmpty()) {
                 Result.success(response.body()!!.first())
+            } else if (response.code() == 401) {
+                sessionManager.notifySessionExpired("Your session expired, please log in again")
+                Result.failure(SessionExpiredException("Your session expired, please log in again"))
             } else {
-                val found = _localOrders.value.find { it.id == orderId }
-                    ?: Order(id = orderId, orderNumber = orderId, customerId = "guest", status = "confirmed", totalAmount = 349.0, paymentMethod = "cod", paymentStatus = "pending")
-                Result.success(found)
+                // Fallback without join
+                val fallback = api.getOrderById(idQuery = "eq.$orderId")
+                if (fallback.isSuccessful && !fallback.body().isNullOrEmpty()) {
+                    Result.success(fallback.body()!!.first())
+                } else if (fallback.code() == 401) {
+                    sessionManager.notifySessionExpired("Your session expired, please log in again")
+                    Result.failure(SessionExpiredException("Your session expired, please log in again"))
+                } else {
+                    Result.failure(Exception("Order not found: $orderId"))
+                }
             }
         } catch (e: Exception) {
-            val found = _localOrders.value.find { it.id == orderId }
-                ?: Order(id = orderId, orderNumber = orderId, customerId = "guest", status = "confirmed", totalAmount = 349.0, paymentMethod = "cod", paymentStatus = "pending")
-            Result.success(found)
+            Result.failure(e)
         }
     }
 
     suspend fun getOrderItems(orderId: String): Result<List<OrderItem>> {
         return try {
             val response = api.getOrderItems(orderId = "eq.$orderId")
-            if (response.isSuccessful && response.body() != null && response.body()!!.isNotEmpty()) {
+            if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
-                val localItems = _localOrderItems.filter { it.orderId == orderId }
-                if (localItems.isNotEmpty()) {
-                    Result.success(localItems)
-                } else {
-                    Result.success(listOf(
-                        OrderItem(id = "oi_1", orderId = orderId, productName = "Farm Fresh Tomatoes", quantity = 2, unitPrice = 32.0, totalPrice = 64.0),
-                        OrderItem(id = "oi_2", orderId = orderId, productName = "Nandini Fresh Milk", quantity = 1, unitPrice = 44.0, totalPrice = 44.0)
-                    ))
-                }
+                Result.success(emptyList())
             }
         } catch (e: Exception) {
-            val localItems = _localOrderItems.filter { it.orderId == orderId }
-            Result.success(localItems)
+            Result.failure(e)
         }
     }
 
     suspend fun getOrderStatusHistory(orderId: String): Result<List<OrderStatusHistory>> {
         return try {
             val response = api.getOrderStatusHistory(orderId = "eq.$orderId")
-            if (response.isSuccessful && response.body() != null && response.body()!!.isNotEmpty()) {
+            if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
-                Result.success(listOf(
-                    OrderStatusHistory(id = "sh_1", orderId = orderId, status = "confirmed", note = "Order confirmed & sent to store", createdAt = "Just now")
-                ))
+                Result.success(emptyList())
             }
         } catch (e: Exception) {
-            Result.success(listOf(
-                OrderStatusHistory(id = "sh_1", orderId = orderId, status = "confirmed", note = "Order confirmed", createdAt = "Just now")
-            ))
+            Result.failure(e)
         }
     }
 
     suspend fun getDeliveryAssignment(orderId: String): Result<DeliveryAssignment?> {
         return try {
-            val response = api.getDeliveryAssignment(orderId = "eq.$orderId")
-            if (response.isSuccessful && response.body() != null) {
-                Result.success(response.body()!!.firstOrNull())
+            val selectFields = "estimated_delivery_minutes,estimated_delivery_at,delivery_otp"
+            val response = api.getDeliveryAssignment(
+                orderId = "eq.$orderId",
+                order = "created_at.desc",
+                limit = 1,
+                select = selectFields
+            )
+            if (response.isSuccessful && !response.body().isNullOrEmpty()) {
+                Result.success(response.body()!!.first())
             } else {
-                Result.success(DeliveryAssignment(orderId = orderId, deliveryPartnerId = "dp_1", status = "assigned"))
+                val fallback = api.getDeliveryAssignment(orderId = "eq.$orderId", order = "created_at.desc", limit = 1)
+                if (fallback.isSuccessful && !fallback.body().isNullOrEmpty()) {
+                    Result.success(fallback.body()!!.first())
+                } else {
+                    Result.success(null)
+                }
             }
         } catch (e: Exception) {
-            Result.success(DeliveryAssignment(orderId = orderId, deliveryPartnerId = "dp_1", status = "assigned"))
+            Result.failure(e)
         }
     }
 
@@ -1043,10 +1518,10 @@ class SndmartRepository(
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!.firstOrNull())
             } else {
-                Result.success(DeliveryPartner(id = partnerId, name = "Ravi Kumar", phone = "+91 99887 76655", vehicleNumber = "KA 36 EV 1024"))
+                Result.success(null)
             }
         } catch (e: Exception) {
-            Result.success(DeliveryPartner(id = partnerId, name = "Ravi Kumar", phone = "+91 99887 76655", vehicleNumber = "KA 36 EV 1024"))
+            Result.failure(e)
         }
     }
 
@@ -1199,4 +1674,15 @@ class SndmartRepository(
             Result.failure(e)
         }
     }
+}
+
+fun calculateHaversineDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val r = 6371.0 // Earth's radius in kilometers
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2)
+    val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    return r * c
 }

@@ -2,7 +2,10 @@ package com.example.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,11 +21,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.*
@@ -30,6 +39,11 @@ import com.example.data.repository.SndmartRepository
 import com.example.ui.components.BillRow
 import com.example.ui.components.ErrorCard
 import com.example.ui.theme.*
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
+import com.google.maps.android.compose.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -53,6 +67,7 @@ fun OrderDetailScreen(
     var statusHistory by remember { mutableStateOf<List<OrderStatusHistory>>(emptyList()) }
     var deliveryAssignment by remember { mutableStateOf<DeliveryAssignment?>(null) }
     var deliveryPartner by remember { mutableStateOf<DeliveryPartner?>(null) }
+    var deliveryAddress by remember { mutableStateOf<CustomerAddress?>(null) }
 
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -77,7 +92,8 @@ fun OrderDetailScreen(
 
             val oRes = repository.getOrderById(orderId)
             if (oRes.isSuccess) {
-                order = oRes.getOrNull()
+                val fetchedOrder = oRes.getOrNull()
+                order = fetchedOrder
                 val itemsRes = repository.getOrderItems(orderId)
                 if (itemsRes.isSuccess) {
                     orderItems = itemsRes.getOrNull() ?: emptyList()
@@ -89,11 +105,32 @@ fun OrderDetailScreen(
                 val assignRes = repository.getDeliveryAssignment(orderId)
                 if (assignRes.isSuccess) {
                     deliveryAssignment = assignRes.getOrNull()
-                    val partnerId = deliveryAssignment?.deliveryPartnerId
+                }
+                if (fetchedOrder?.deliveryPartner != null) {
+                    deliveryPartner = fetchedOrder.deliveryPartner
+                } else {
+                    val partnerId = fetchedOrder?.deliveryPartnerId ?: deliveryAssignment?.deliveryPartnerId
                     if (!partnerId.isNullOrBlank()) {
                         val partRes = repository.getDeliveryPartner(partnerId)
                         if (partRes.isSuccess) {
                             deliveryPartner = partRes.getOrNull()
+                        }
+                    } else {
+                        deliveryPartner = null
+                    }
+                }
+
+                // Resolve delivery address for map pin
+                val addrId = fetchedOrder?.addressId
+                if (!addrId.isNullOrBlank()) {
+                    val addrRes = repository.getAddressById(addrId)
+                    if (addrRes.isSuccess && addrRes.getOrNull() != null) {
+                        deliveryAddress = addrRes.getOrNull()
+                    } else if (!fetchedOrder.customerId.isNullOrBlank()) {
+                        val allAddrs = repository.getAddresses(fetchedOrder.customerId)
+                        if (allAddrs.isSuccess) {
+                            deliveryAddress = allAddrs.getOrNull()?.find { it.id == addrId }
+                                ?: allAddrs.getOrNull()?.firstOrNull()
                         }
                     }
                 }
@@ -126,14 +163,17 @@ fun OrderDetailScreen(
     }
 
     // Driver location polling: re-fetch the delivery_partners row every ~12s while the
-    // order is still active (confirmed → out_for_delivery). Stops once delivered/cancelled.
-    LaunchedEffect(order?.status, deliveryPartner?.id) {
-        val partnerId = deliveryPartner?.id
-        val activeStatuses = listOf("confirmed", "preparing", "ready", "out_for_delivery")
-        while (order != null && activeStatuses.contains(order!!.status.lowercase()) && !partnerId.isNullOrBlank()) {
-            delay(12000)
+    // order is still active (confirmed → out_for_delivery) and partner is assigned. Stops once delivered/cancelled.
+    val activeTrackingStatuses = remember { listOf("confirmed", "preparing", "ready", "out_for_delivery") }
+    val effectivePartnerId = order?.deliveryPartnerId ?: deliveryAssignment?.deliveryPartnerId ?: deliveryPartner?.id
+    val showLiveTracking = !effectivePartnerId.isNullOrBlank() && activeTrackingStatuses.contains(order?.status?.lowercase())
+
+    LaunchedEffect(effectivePartnerId, order?.status) {
+        val partnerId = effectivePartnerId
+        while (showLiveTracking && !partnerId.isNullOrBlank()) {
+            delay(12000) // Poll partner position every 12 seconds
             val partRes = repository.getDeliveryPartner(partnerId)
-            if (partRes.isSuccess) {
+            if (partRes.isSuccess && partRes.getOrNull() != null) {
                 deliveryPartner = partRes.getOrNull()
             }
         }
@@ -252,8 +292,8 @@ fun OrderDetailScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // 1. Delivery OTP Card (Prominently displayed when out_for_delivery)
-                    if (currentOrder.status.lowercase() == "out_for_delivery" && !deliveryAssignment?.deliveryOtp.isNullOrBlank()) {
+                    // 1. Delivery OTP Card (Prominently displayed ONLY when out_for_delivery and partner is assigned)
+                    if (showLiveTracking && currentOrder.status.lowercase() == "out_for_delivery" && !deliveryAssignment?.deliveryOtp.isNullOrBlank()) {
                         item {
                             Card(
                                 modifier = Modifier
@@ -269,109 +309,114 @@ fun OrderDetailScreen(
                                         .padding(16.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.VerifiedUser,
+                                            contentDescription = null,
+                                            tint = NaturalPrimary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            "DELIVERY VERIFICATION OTP",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = NaturalPrimary,
+                                            letterSpacing = 1.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
                                     Text(
-                                        "DELIVERY VERIFICATION OTP",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
+                                        text = deliveryAssignment!!.deliveryOtp!!,
+                                        fontSize = 34.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 8.sp,
                                         color = NaturalPrimary
                                     )
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text(
-                                        text = deliveryAssignment!!.deliveryOtp!!,
-                                        fontSize = 32.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 6.sp,
-                                        color = NaturalPrimary
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
                                         "Share this code with your delivery partner to confirm delivery.",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = TextSecondary
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                        textAlign = TextAlign.Center
                                     )
                                 }
                             }
                         }
                     }
 
-                    // 2. Live Driver info & ETA countdown — only while a partner is assigned
-                    //    and the order is still active (not delivered/cancelled).
-                    val activeForTracking = listOf("confirmed", "preparing", "ready", "out_for_delivery")
-                    if (deliveryPartner != null && activeForTracking.contains(currentOrder.status.lowercase())) {
+                    // 2. Live Tracking Section (ETA + Delivery Partner + Live Map)
+                    // Shown ONLY when BOTH are true:
+                    // - orders.delivery_partner_id is not null (partner assigned)
+                    // - orders.status is one of: confirmed, preparing, ready, out_for_delivery
+                    if (showLiveTracking) {
                         item {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("driver_info_card"),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
+                            if (deliveryPartner == null) {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("live_tracking_loading_card"),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                                ) {
                                     Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Surface(
-                                                shape = CircleShape,
-                                                color = PastelSky,
-                                                modifier = Modifier.size(44.dp)
-                                            ) {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(Icons.Default.DeliveryDining, contentDescription = null, tint = NaturalPrimary)
-                                                }
-                                            }
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Column {
-                                                Text(deliveryPartner!!.name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                                if (!deliveryPartner!!.vehicleNumber.isNullOrBlank()) {
-                                                    Text(
-                                                        "${deliveryPartner!!.vehicleType ?: "Vehicle"}: ${deliveryPartner!!.vehicleNumber}",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = TextSecondary
-                                                    )
-                                                }
-                                            }
-                                        }
-
-                                        if (!deliveryPartner!!.phone.isNullOrBlank()) {
-                                            IconButton(
-                                                onClick = {
-                                                    val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${deliveryPartner!!.phone}"))
-                                                    context.startActivity(intent)
-                                                },
-                                                modifier = Modifier
-                                                    .background(NaturalPrimary, CircleShape)
-                                                    .size(40.dp)
-                                                    .testTag("call_driver_button")
-                                            ) {
-                                                Icon(Icons.Default.Phone, contentDescription = "Call Driver", tint = Color.White, modifier = Modifier.size(20.dp))
-                                            }
-                                        }
-                                    }
-
-                                    if (!deliveryAssignment?.estimatedDeliveryAt.isNullOrBlank()) {
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        EtaCountdown(
-                                            estimatedDeliveryAt = deliveryAssignment!!.estimatedDeliveryAt!!,
-                                            isDelivered = currentOrder.status.lowercase() == "delivered"
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(24.dp),
+                                            color = NaturalPrimary,
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(
+                                            "Loading delivery partner details...",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = TextSecondary
                                         )
                                     }
+                                }
+                            } else {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("live_tracking_card"),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        // A. Live ETA countdown
+                                        LiveEtaCountdownBanner(
+                                            estimatedDeliveryAt = deliveryAssignment?.estimatedDeliveryAt,
+                                            estimatedDeliveryMinutes = deliveryAssignment?.estimatedDeliveryMinutes,
+                                            isDelivered = currentOrder.status.lowercase() == "delivered"
+                                        )
 
-                                    // Live coordinates indicator
-                                    if (deliveryPartner?.latitude != null && deliveryPartner?.longitude != null) {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.MyLocation, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = "Driver Live Location: ${"%.4f".format(deliveryPartner!!.latitude)}, ${"%.4f".format(deliveryPartner!!.longitude)}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = TextSecondary
-                                            )
-                                        }
+                                        Spacer(modifier = Modifier.height(14.dp))
+
+                                        // B. Delivery Partner Card
+                                        DeliveryPartnerCardContent(
+                                            deliveryPartner = deliveryPartner!!,
+                                            onCallClick = { phone ->
+                                                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+                                                context.startActivity(intent)
+                                            }
+                                        )
+
+                                        Spacer(modifier = Modifier.height(14.dp))
+
+                                        // C. Live Map
+                                        LiveDeliveryMap(
+                                            deliveryPartner = deliveryPartner!!,
+                                            deliveryAddress = deliveryAddress
+                                        )
                                     }
                                 }
                             }
@@ -418,27 +463,36 @@ fun OrderDetailScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
-                                orderItems.forEach { item ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(item.productName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                if (orderItems.isEmpty()) {
+                                    Text(
+                                        "No items recorded for this order.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                        modifier = Modifier.padding(vertical = 4.dp)
+                                    )
+                                } else {
+                                    orderItems.forEach { item ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(item.productName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                                Text(
+                                                    "${item.quantity} x ₹${"%.0f".format(item.unitPrice)}${if (!item.variantLabel.isNullOrBlank()) " (${item.variantLabel})" else ""}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = TextSecondary
+                                                )
+                                            }
                                             Text(
-                                                "${item.quantity} x ₹${"%.0f".format(item.unitPrice)}${if (!item.variantLabel.isNullOrBlank()) " (${item.variantLabel})" else ""}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = TextSecondary
+                                                "₹${"%.0f".format(item.totalPrice)}",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
                                             )
                                         }
-                                        Text(
-                                            "₹${"%.0f".format(item.totalPrice)}",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
                                     }
                                 }
                             }
@@ -456,7 +510,14 @@ fun OrderDetailScreen(
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("Payment Summary", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Spacer(modifier = Modifier.height(8.dp))
-                                BillRow("Payment Method", currentOrder.paymentMethod.uppercase())
+                                val displayPaymentMethod = when (currentOrder.paymentMethod.lowercase()) {
+                                    "cash" -> if (currentOrder.paymentStatus.lowercase() == "cod") "Cash on Delivery (COD)" else "Cash"
+                                    "upi" -> "UPI"
+                                    "card" -> "Card"
+                                    "online" -> "Online"
+                                    else -> currentOrder.paymentMethod.uppercase()
+                                }
+                                BillRow("Payment Method", displayPaymentMethod)
                                 BillRow("Payment Status", currentOrder.paymentStatus.capitalize())
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
                                 BillRow("Subtotal", "₹${"%.2f".format(currentOrder.subtotal)}")
@@ -750,45 +811,483 @@ fun OrderStatusStepper(
 // "Arriving any moment" once the ETA has passed but the order isn't delivered yet.
 @Composable
 fun EtaCountdown(estimatedDeliveryAt: String, isDelivered: Boolean) {
+    LiveEtaCountdownBanner(
+        estimatedDeliveryAt = estimatedDeliveryAt,
+        estimatedDeliveryMinutes = null,
+        isDelivered = isDelivered
+    )
+}
+
+@Composable
+fun LiveEtaCountdownBanner(
+    estimatedDeliveryAt: String?,
+    estimatedDeliveryMinutes: Int?,
+    isDelivered: Boolean
+) {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
+
     LaunchedEffect(estimatedDeliveryAt) {
         while (true) {
-            delay(30000)
+            delay(30000) // Ticks down every 30s
             now = System.currentTimeMillis()
         }
     }
-    val etaMillis = remember(estimatedDeliveryAt) { parseIsoTimestamp(estimatedDeliveryAt) }
-    if (etaMillis <= 0L) return
 
-    val remainingMs = etaMillis - now
-    val label = when {
-        remainingMs <= 0 && isDelivered -> "Delivered"
-        remainingMs <= 0 -> "Arriving any moment"
+    val label: String = when {
+        isDelivered -> "Delivered"
+        !estimatedDeliveryAt.isNullOrBlank() -> {
+            val etaMillis = parseIsoTimestamp(estimatedDeliveryAt)
+            if (etaMillis <= 0L) {
+                if (estimatedDeliveryMinutes != null && estimatedDeliveryMinutes > 0) {
+                    "Arriving in ~$estimatedDeliveryMinutes min"
+                } else {
+                    "Calculating arrival time..."
+                }
+            } else {
+                val remainingMs = etaMillis - now
+                if (remainingMs <= 0) {
+                    "Arriving any moment"
+                } else {
+                    val remainingMin = kotlin.math.ceil(remainingMs / 60000.0).toInt().coerceAtLeast(1)
+                    val h = remainingMin / 60
+                    val m = remainingMin % 60
+                    if (h > 0) "Arriving in ~${h}h ${m}m" else "Arriving in ~$m min"
+                }
+            }
+        }
+        estimatedDeliveryMinutes != null && estimatedDeliveryMinutes > 0 -> {
+            "Arriving in ~$estimatedDeliveryMinutes min"
+        }
         else -> {
-            val totalMin = (remainingMs / 60000).toInt()
-            val h = totalMin / 60
-            val m = totalMin % 60
-            if (h > 0) "Arriving in ${h}h ${m}m" else "Arriving in ${m}m"
+            "Calculating arrival time..."
         }
     }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = PastelSage,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("eta_countdown_banner")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(Color.White.copy(alpha = 0.8f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Outlined.AccessTime,
+                        contentDescription = "Estimated Delivery Time",
+                        tint = DarkGreenText,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "ESTIMATED ARRIVAL",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = DarkGreenText.copy(alpha = 0.8f),
+                        letterSpacing = 0.5.sp
+                    )
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = DarkGreenText
+                    )
+                }
+            }
+
+            // Live indicator badge
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.White.copy(alpha = 0.9f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(SuccessGreen, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "LIVE",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 10.sp,
+                        color = SuccessGreen
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeliveryPartnerCardContent(
+    deliveryPartner: DeliveryPartner,
+    onCallClick: (String) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(Icons.Outlined.AccessTime, contentDescription = null, tint = DarkGreenText, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = DarkGreenText
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                // Photo / Icon placeholder
+                Surface(
+                    shape = CircleShape,
+                    color = NaturalPrimary.copy(alpha = 0.12f),
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.DeliveryDining,
+                            contentDescription = "Delivery Partner Avatar",
+                            tint = NaturalPrimary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = deliveryPartner.name.ifBlank { "Delivery Partner" },
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    val vehicleInfo = listOfNotNull(
+                        deliveryPartner.vehicleType?.replaceFirstChar { it.uppercase() }?.takeIf { it.isNotBlank() },
+                        deliveryPartner.vehicleNumber?.takeIf { it.isNotBlank() }
+                    ).joinToString(" • ")
+
+                    Text(
+                        text = if (vehicleInfo.isNotBlank()) vehicleInfo else "Delivery Partner",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            if (!deliveryPartner.phone.isNullOrBlank()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = { onCallClick(deliveryPartner.phone) },
+                    colors = ButtonDefaults.buttonColors(containerColor = NaturalPrimary),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.testTag("call_partner_button")
+                ) {
+                    Icon(
+                        Icons.Default.Phone,
+                        contentDescription = "Call Partner",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Call",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LiveDeliveryMap(
+    deliveryPartner: DeliveryPartner,
+    deliveryAddress: CustomerAddress?
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val lat = deliveryPartner.latitude
+    val lng = deliveryPartner.longitude
+
+    if (lat == null || lng == null) {
+        // "Waiting for delivery partner to start sharing location..."
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("map_waiting_location")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Outlined.LocationSearching,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "Waiting for delivery partner to start sharing location...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = TextSecondary
+                    )
+                    Text(
+                        text = "Live GPS updates will appear automatically",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted
+                    )
+                }
+            }
+        }
+    } else {
+        val partnerLatLng = remember(lat, lng) { LatLng(lat, lng) }
+        val destLatLng = remember(deliveryAddress?.lat, deliveryAddress?.lng) {
+            if (deliveryAddress?.lat != null && deliveryAddress.lng != null && deliveryAddress.lat != 0.0) {
+                LatLng(deliveryAddress.lat, deliveryAddress.lng)
+            } else null
+        }
+
+        val cameraPositionState = rememberCameraPositionState {
+            position = CameraPosition.fromLatLngZoom(partnerLatLng, 15f)
+        }
+
+        // Auto-fit camera when partner or destination location updates
+        LaunchedEffect(partnerLatLng, destLatLng) {
+            try {
+                if (destLatLng != null) {
+                    val bounds = LatLngBounds.builder()
+                        .include(partnerLatLng)
+                        .include(destLatLng)
+                        .build()
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(bounds, 120))
+                } else {
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(partnerLatLng, 15f))
+                }
+            } catch (e: Exception) {
+                // If map not yet laid out, fallback to centering on partner
+                cameraPositionState.position = CameraPosition.fromLatLngZoom(partnerLatLng, 15f)
+            }
+        }
+
+        // Live Map Container
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+            shadowElevation = 2.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("live_delivery_map")
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                // Header Bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(SuccessGreen, CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Live Delivery Tracking",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = SuccessGreen.copy(alpha = 0.12f)
+                    ) {
+                        Text(
+                            text = "Live GPS (12s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SuccessGreen,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Interactive Google Map View
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                ) {
+                    GoogleMap(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("google_tracking_map"),
+                        cameraPositionState = cameraPositionState,
+                        uiSettings = remember {
+                            MapUiSettings(
+                                zoomControlsEnabled = false,
+                                myLocationButtonEnabled = false,
+                                compassEnabled = true
+                            )
+                        }
+                    ) {
+                        // Marker 1: Delivery Partner
+                        Marker(
+                            state = rememberMarkerState(position = partnerLatLng).apply {
+                                position = partnerLatLng
+                            },
+                            title = "Delivery Partner: ${deliveryPartner.name}",
+                            snippet = "On the way to deliver your order"
+                        )
+
+                        // Marker 2: Delivery Address Destination (if coords available)
+                        if (destLatLng != null) {
+                            Marker(
+                                state = rememberMarkerState(position = destLatLng),
+                                title = "Delivery Address (${deliveryAddress?.label ?: "Home"})",
+                                snippet = deliveryAddress?.addressLine ?: ""
+                            )
+
+                            // Route Polyline connecting Rider to Destination
+                            Polyline(
+                                points = listOf(partnerLatLng, destLatLng),
+                                color = NaturalPrimary,
+                                width = 8f
+                            )
+                        }
+                    }
+
+                    // Floating Recenter Button
+                    SmallFloatingActionButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                if (destLatLng != null) {
+                                    val bounds = LatLngBounds.builder()
+                                        .include(partnerLatLng)
+                                        .include(destLatLng)
+                                        .build()
+                                    cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(bounds, 120))
+                                } else {
+                                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(partnerLatLng, 16f))
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(10.dp)
+                            .size(36.dp),
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = NaturalPrimary,
+                        shape = CircleShape
+                    ) {
+                        Icon(Icons.Default.CenterFocusStrong, contentDescription = "Recenter Map", modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Bottom bar inside card: GPS details & Open Maps button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.TwoWheeler, contentDescription = null, tint = NaturalPrimary, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Rider: ${deliveryPartner.name}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TextPrimary
+                            )
+                        }
+                        if (!deliveryAddress?.addressLine.isNullOrBlank()) {
+                            Text(
+                                text = "To: ${deliveryAddress!!.addressLine}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val mapUri = Uri.parse("geo:$lat,$lng?q=$lat,$lng(Delivery+Partner)")
+                            val intent = Intent(Intent.ACTION_VIEW, mapUri)
+                            intent.setPackage("com.google.android.apps.maps")
+                            try {
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://maps.google.com/?q=$lat,$lng"))
+                                context.startActivity(browserIntent)
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("open_maps_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Map,
+                            contentDescription = "Open in Google Maps",
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Open in Maps",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
         }
     }
 }

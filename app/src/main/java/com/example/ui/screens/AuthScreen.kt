@@ -72,6 +72,14 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    val sessionExpiredMsg by sessionManager.sessionExpiredMessage.collectAsState()
+    LaunchedEffect(sessionExpiredMsg) {
+        if (!sessionExpiredMsg.isNullOrBlank()) {
+            errorMessage = sessionExpiredMsg
+            sessionManager.clearSessionExpiredMessage()
+        }
+    }
+
     fun registerFcm(userId: String) {
         try {
             val app = com.google.firebase.FirebaseApp.getInstance()
@@ -177,7 +185,8 @@ fun AuthScreen(
                         userId = uid,
                         email = email.trim(),
                         name = resolvedName,
-                        phone = resolvedPhone
+                        phone = resolvedPhone,
+                        expiresInSeconds = auth.expiresIn
                     )
 
                     // Ensure profiles row exists
@@ -242,7 +251,8 @@ fun AuthScreen(
                             userId = uid,
                             email = email.trim(),
                             name = fullName.trim(),
-                            phone = phone.trim()
+                            phone = phone.trim(),
+                            expiresInSeconds = auth.expiresIn
                         )
 
                         // Insert profiles row: id = user.id, role = 'customer', full_name, phone, email
@@ -302,7 +312,8 @@ fun AuthScreen(
                         userId = uid,
                         email = email.trim(),
                         name = fullName.trim(),
-                        phone = phone.trim()
+                        phone = phone.trim(),
+                        expiresInSeconds = auth.expiresIn
                     )
 
                     // On success, insert profiles row: id = user.id, role = 'customer', full_name, phone, email
@@ -374,7 +385,8 @@ fun AuthScreen(
                             refreshToken = auth.refreshToken,
                             userId = uid,
                             email = resolvedEmail,
-                            name = resolvedName
+                            name = resolvedName,
+                            expiresInSeconds = auth.expiresIn
                         )
 
                         // Check if profiles row exists; if not, insert one with role='customer', full_name and email

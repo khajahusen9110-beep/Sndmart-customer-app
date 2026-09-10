@@ -328,16 +328,21 @@ fun HomeScreen(
 
             // --- GROCERY VIEW ---
             if (browsingMode == BrowsingMode.GROCERY) {
-                if (groceryError != null && groceryProducts.isEmpty()) {
-                    ErrorCard(
-                        message = groceryError!!,
-                        onRetry = { selectedCity.id.let { loadGroceryProducts(it, searchQuery) } }
-                    )
-                }
-
                 if (isGroceryLoading) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = NaturalPrimary)
+                    }
+                } else if (groceryError != null && groceryProducts.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                        ErrorCard(
+                            message = groceryError!!,
+                            onRetry = {
+                                selectedCity.id.let {
+                                    loadGroceryCategories(it)
+                                    loadGroceryProducts(it, searchQuery)
+                                }
+                            }
+                        )
                     }
                 } else {
                     // Search is performed server-side (name=ilike); just render the results.
@@ -418,16 +423,16 @@ fun HomeScreen(
 
             // --- HOTELS VIEW ---
             if (browsingMode == BrowsingMode.HOTELS) {
-                if (hotelsError != null && hotels.isEmpty()) {
-                    ErrorCard(
-                        message = hotelsError!!,
-                        onRetry = { selectedCity.id.let { loadHotelsData(it, searchQuery) } }
-                    )
-                }
-
                 if (isHotelsLoading) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = NaturalPrimary)
+                    }
+                } else if (hotelsError != null && hotels.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                        ErrorCard(
+                            message = hotelsError!!,
+                            onRetry = { selectedCity.id.let { loadHotelsData(it, searchQuery) } }
+                        )
                     }
                 } else {
                     // Search is performed server-side (name=ilike); just render the results.

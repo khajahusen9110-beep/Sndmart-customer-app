@@ -29,6 +29,11 @@ interface SupabaseApi {
         @Body body: Map<String, String>
     ): Response<SupabaseAuthResponse>
 
+    @POST("auth/v1/token?grant_type=refresh_token")
+    suspend fun refreshSession(
+        @Body body: Map<String, String>
+    ): Response<SupabaseAuthResponse>
+
     // --- CITIES ---
 
     @GET("rest/v1/cities")
@@ -159,6 +164,11 @@ interface SupabaseApi {
         @Query("order") order: String = "is_default.desc,id.desc"
     ): Response<List<CustomerAddress>>
 
+    @GET("rest/v1/customer_addresses")
+    suspend fun getAddressById(
+        @Query("id") idQuery: String
+    ): Response<List<CustomerAddress>>
+
     @Headers("Prefer: return=representation")
     @POST("rest/v1/customer_addresses")
     suspend fun insertAddress(
@@ -177,13 +187,35 @@ interface SupabaseApi {
         @Query("id") idQuery: String
     ): Response<ResponseBody>
 
-    // --- DELIVERY SLOTS ---
+    // --- DELIVERY SLOTS & OPTIONS (RPC) ---
 
     @GET("rest/v1/delivery_slots")
     suspend fun getDeliverySlots(
+        @Query("city_id") cityId: String? = null,
+        @Query("is_active") isActive: String = "eq.true",
+        @Query("order") order: String = "start_time.asc"
+    ): Response<List<DeliverySlot>>
+
+    @GET("rest/v1/express_delivery_settings")
+    suspend fun getExpressDeliverySettings(
         @Query("city_id") cityId: String,
         @Query("is_active") isActive: String = "eq.true"
-    ): Response<List<DeliverySlot>>
+    ): Response<List<ExpressDeliverySettings>>
+
+    @POST("rest/v1/rpc/get_customer_delivery_options")
+    suspend fun getCustomerDeliveryOptions(
+        @Body body: Map<String, String>
+    ): Response<CustomerDeliveryOptions>
+
+    @POST("rest/v1/rpc/calculate_city_delivery_charge")
+    suspend fun calculateCityDeliveryCharge(
+        @Body body: Map<String, @JvmSuppressWildcards Any?>
+    ): Response<DeliveryChargeResult>
+
+    @POST("rest/v1/rpc/calculate_city_coupon_discount")
+    suspend fun calculateCityCouponDiscount(
+        @Body body: Map<String, @JvmSuppressWildcards Any?>
+    ): Response<ResponseBody>
 
     // --- COUPONS ---
 
@@ -205,12 +237,13 @@ interface SupabaseApi {
     @GET("rest/v1/orders")
     suspend fun getOrders(
         @Query("customer_id") customerId: String,
-        @Query("order") order: String = "created_at.desc"
+        @Query("order") order: String = "placed_at.desc"
     ): Response<List<Order>>
 
     @GET("rest/v1/orders")
     suspend fun getOrderById(
-        @Query("id") idQuery: String
+        @Query("id") idQuery: String,
+        @Query("select") select: String? = null
     ): Response<List<Order>>
 
     @Headers("Prefer: return=representation")
@@ -240,7 +273,10 @@ interface SupabaseApi {
 
     @GET("rest/v1/delivery_assignments")
     suspend fun getDeliveryAssignment(
-        @Query("order_id") orderId: String
+        @Query("order_id") orderId: String,
+        @Query("order") order: String = "created_at.desc",
+        @Query("limit") limit: Int = 1,
+        @Query("select") select: String? = null
     ): Response<List<DeliveryAssignment>>
 
     @GET("rest/v1/delivery_partners")

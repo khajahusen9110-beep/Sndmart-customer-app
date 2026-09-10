@@ -304,11 +304,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Re-check location when app is resumed after being backgrounded >30 minutes
+                // Re-check location and ensure session validity when app is resumed
                 val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
+                            coroutineScope.launch {
+                                try {
+                                    repository.ensureValidSession()
+                                } catch (e: Exception) {
+                                    // Handled in repository
+                                }
+                            }
                             val elapsed = System.currentTimeMillis() - lastDetectionTimeMs
                             if (lastDetectionTimeMs > 0 && elapsed > 30 * 60 * 1000L) {
                                 recheckLocationSilently()
@@ -318,6 +325,16 @@ class MainActivity : ComponentActivity() {
                     lifecycleOwner.lifecycle.addObserver(observer)
                     onDispose {
                         lifecycleOwner.lifecycle.removeObserver(observer)
+                    }
+                }
+
+                // Redirect to login when session expires
+                LaunchedEffect(Unit) {
+                    sessionManager.sessionExpiredEvent.collectLatest { message ->
+                        snackbarMessage = message
+                        if (currentDestination != Screen.Auth.route) {
+                            navController.navigate(Screen.Auth.route)
+                        }
                     }
                 }
 
